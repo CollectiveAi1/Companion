@@ -1,0 +1,8 @@
+{
+  "name": "My AI Friend",
+  "description": "Create a fully customizable AI companion for children. Design their look, choose their voice and personality, and enjoy a friendly, creative chat partner who's always there to talk and play.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
