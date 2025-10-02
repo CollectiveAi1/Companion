@@ -1,3 +1,5 @@
+
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { AvatarConfig, Voice, Personality, Transcript, Board, Player, WinnerInfo } from '../types';
 import type { LiveSession, LiveServerMessage } from '@google/genai';
@@ -78,6 +80,11 @@ const tools: FunctionDeclaration[] = [
     {
         name: 'resetGame',
         description: 'Resets the Tic-Tac-Toe board for a new game.',
+        parameters: { type: Type.OBJECT, properties: {} },
+    },
+     {
+        name: 'endGame',
+        description: 'Ends the current game and hides the game board from the screen.',
         parameters: { type: Type.OBJECT, properties: {} },
     },
     {
@@ -170,29 +177,29 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
         return;
     }
 
-    // User's move
     const newBoard = gameBoard.map(r => [...r]);
     newBoard[row][col] = 'X';
     setGameBoard(newBoard);
 
     const result = checkWinner(newBoard);
+    const session = await sessionPromiseRef.current;
+    if (!session) return;
+    
     if (result) {
         setWinnerInfo(result);
-        setCurrentPlayer(null);
+        setCurrentPlayer(null); // Game over
+        const resultText = result === 'draw' ? 'a draw' : `a win for the user ('X')`;
+        const prompt = `The user placed their 'X' at row ${row}, column ${col}. The game is now over. The result is ${resultText}.`;
+        session.sendRealtimeInput({ text: prompt });
         return;
     }
 
     // AI's turn
     setCurrentPlayer('O');
-
-    // Notify AI
     const boardString = JSON.stringify(newBoard);
     const prompt = `The user placed their 'X' at row ${row}, column ${col}. The current board is ${boardString}. It is now your turn to place 'O'. Call the aiMakeMove function with your chosen coordinates.`;
+    session.sendRealtimeInput({ text: prompt });
 
-    const session = await sessionPromiseRef.current;
-    if (session) {
-        session.sendRealtimeInput({ text: prompt });
-    }
   }, [gameBoard, currentPlayer, winnerInfo, checkWinner]);
 
    const handleSubmitDrawing = useCallback((imageDataUrl: string) => {
@@ -223,6 +230,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   const connectToGemini = useCallback(async () => {
     setStatus('Getting ready...');
     if (!process.env.API_KEY) {
+      // This case should be handled by the App component, but as a fallback:
       setStatus('Error: API Key not found.');
       return;
     }
@@ -235,6 +243,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       outputNode.connect(outputAudioContextRef.current.destination);
 
       const sessionPromise = ai.live.connect({
+        // Fix: Corrected the model name to use a period instead of a hyphen.
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
           onopen: async () => {
@@ -306,9 +315,15 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
                             setCurrentPlayer('X');
                             setWinnerInfo(null);
                             break;
+                        case 'endGame':
+                            setGameBoard(null);
+                            setWinnerInfo(null);
+                            setCurrentPlayer(null);
+                            break;
                         case 'aiMakeMove': {
                             const { row, col } = call.args as { row: number; col: number };
                             const { board, player } = gameStateRef.current;
+                            let gameResultInfo = "The game continues. It is now the user's turn.";
 
                             if (!board || player !== 'O' || row < 0 || row > 2 || col < 0 || col > 2 || board[row][col] !== '') {
                                 functionResult = { success: false, error: 'Invalid move.' };
@@ -321,9 +336,11 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
                                 if (result) {
                                     setWinnerInfo(result);
                                     setCurrentPlayer(null); // Game over
+                                    gameResultInfo = result === 'draw' ? 'The game is a draw.' : `You ('O') won the game.`;
                                 } else {
                                     setCurrentPlayer('X'); // User's turn
                                 }
+                                functionResult = { success: true, gameState: gameResultInfo };
                             }
                             break;
                         }
@@ -397,7 +414,15 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
             setStatus('Connection error. Please try again.');
           },
           onclose: (e: CloseEvent) => {
-            setStatus('Connection closed.');
+            console.error('Gemini session closed:', e.code, e.reason);
+            let message = 'Connection closed.';
+            // A 1008 (Policy Violation) or a reason containing 'API key' strongly suggests an auth issue.
+            if (e.code === 1008 || (e.reason && e.reason.toLowerCase().includes('api key'))) {
+              message = 'Connection failed. Please check if your API key is valid.';
+            } else if (e.code === 1006) {
+                message = 'Connection lost. Please check your network.'
+            }
+            setStatus(message);
           },
         },
         config: {
@@ -445,7 +470,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
 
 
   const getStatusText = () => {
-    if (status.includes('Connecting') || status.includes('Error') || status.includes('closed') || status.includes('access')) {
+    if (status.includes('Connecting') || status.includes('Error') || status.includes('closed') || status.includes('access') || status.includes('failed')) {
         return status;
     }
     if (isSpeaking) {

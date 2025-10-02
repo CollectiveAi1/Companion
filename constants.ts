@@ -30,10 +30,12 @@ const GAME_INSTRUCTIONS = `You can play on-screen Tic-Tac-Toe. The user is 'X' a
 - When the user asks to play, call 'startGame' to display the board.
 - The user will click on the board to place their 'X'. You will be notified of their move and the current board state.
 - After the user moves, your task is to decide your move as 'O' and call the 'aiMakeMove(row, col)' function with the coordinates of your choice.
-- Do not try to place a mark for the user.
-- Announce your move conversationally after you call the function.
-- The system will tell you if someone has won or if it's a draw. Announce the result and be a good sport.
-- You can ask for a rematch, which will call 'resetGame'. ${DRAWING_GAME_INSTRUCTIONS}`;
+- After you call 'aiMakeMove', you will receive a response with the game state. Use this information to continue the conversation.
+- If the game is over (win, lose, or draw), announce the result and be a good sport.
+- After announcing the result, you MUST ask the user if they want to play again or do something else.
+- If they want to play again, call 'resetGame'.
+- If they want to do something else (like just chat or play a different game), you MUST call 'endGame' to hide the board.
+- Do not try to place a mark for the user. ${DRAWING_GAME_INSTRUCTIONS}`;
 
 
 export const PERSONALITIES: Personality[] = [

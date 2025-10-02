@@ -8,6 +8,20 @@ import ChatScreen from './components/ChatScreen';
 
 const App: React.FC = () => {
   const [screen, setScreen] = useState<AppScreen>(AppScreen.CUSTOMIZATION);
+  const [apiKeyExists, setApiKeyExists] = useState(true);
+
+  useEffect(() => {
+    // In a browser environment, `process` might not be defined.
+    // This check prevents the app from crashing and provides a clear error message.
+    try {
+      if (!process.env.API_KEY) {
+        setApiKeyExists(false);
+      }
+    } catch (e) {
+       // If process is not defined, it will throw an error.
+      setApiKeyExists(false);
+    }
+  }, []);
 
   const [avatar, setAvatar] = useState<AvatarConfig>(() => {
     try {
@@ -69,27 +83,45 @@ const App: React.FC = () => {
     setScreen(AppScreen.CUSTOMIZATION);
   }, []);
 
+  const renderContent = () => {
+    if (!apiKeyExists) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-center p-8 text-gray-800">
+            <h1 className="text-3xl font-bold text-red-600 mb-4">Configuration Error</h1>
+            <p className="text-lg">The Gemini API key is missing from the environment.</p>
+            <p className="text-gray-600 mt-2">Please ensure the <code>API_KEY</code> environment variable is set correctly in your development environment to use this application.</p>
+        </div>
+      );
+    }
+    
+    if (screen === AppScreen.CUSTOMIZATION) {
+      return (
+        <CustomizationScreen
+          avatar={avatar}
+          voice={voice}
+          personality={personality}
+          onAvatarChange={setAvatar}
+          onVoiceChange={setVoice}
+          onPersonalityChange={setPersonality}
+          onStartChat={handleStartChat}
+        />
+      );
+    }
+
+    return (
+       <ChatScreen
+          avatar={avatar}
+          voice={voice}
+          personality={personality}
+          onEndChat={handleEndChat}
+        />
+    );
+  }
+
   return (
     <main className="bg-gradient-to-br from-purple-200 via-indigo-200 to-blue-200 min-h-screen w-full flex flex-col items-center justify-center font-sans p-4">
       <div className="w-full max-w-2xl h-[90vh] max-h-[800px] bg-white/70 backdrop-blur-xl rounded-3xl shadow-2xl overflow-hidden flex flex-col">
-        {screen === AppScreen.CUSTOMIZATION ? (
-          <CustomizationScreen
-            avatar={avatar}
-            voice={voice}
-            personality={personality}
-            onAvatarChange={setAvatar}
-            onVoiceChange={setVoice}
-            onPersonalityChange={setPersonality}
-            onStartChat={handleStartChat}
-          />
-        ) : (
-          <ChatScreen
-            avatar={avatar}
-            voice={voice}
-            personality={personality}
-            onEndChat={handleEndChat}
-          />
-        )}
+        {renderContent()}
       </div>
        <footer className="text-center mt-4 text-xs text-gray-500">
           <p>Built with React & Gemini API. Avatars by DiceBear.</p>
