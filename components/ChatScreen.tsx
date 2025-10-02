@@ -238,7 +238,13 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
           onopen: async () => {
-            setStatus('Connected! Speak whenever you like.');
+            setStatus('Connected! Tap the avatar to speak.');
+            
+            // Proactively greet the user to start the conversation
+            sessionPromise.then(session => {
+                session.sendRealtimeInput({ text: 'Give a short, warm, and friendly greeting based on your personality to start the conversation.' });
+            });
+
              try {
               streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
               inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
@@ -269,7 +275,13 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
              }
           },
           onmessage: async (message: LiveServerMessage) => {
-             if (message.toolCall) {
+             // If AI starts responding, the user's turn is over.
+            if (isListeningRef.current && (message.serverContent?.outputTranscription || message.serverContent?.modelTurn?.parts[0]?.inlineData?.data)) {
+                isListeningRef.current = false;
+                setIsListening(false);
+            }
+
+            if (message.toolCall) {
                 const results = [];
                 for (const call of message.toolCall.functionCalls) {
                     let functionResult: any = { success: true };
@@ -422,16 +434,15 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleStartListening = useCallback(() => {
+  const handleToggleListening = useCallback(() => {
     if (isSpeaking || !status.includes('Connected')) return;
-    isListeningRef.current = true;
-    setIsListening(true);
+    
+    // This toggles the listening state
+    const newIsListening = !isListeningRef.current;
+    isListeningRef.current = newIsListening;
+    setIsListening(newIsListening);
   }, [isSpeaking, status]);
 
-  const handleStopListening = useCallback(() => {
-    isListeningRef.current = false;
-    setIsListening(false);
-  }, []);
 
   const getStatusText = () => {
     if (status.includes('Connecting') || status.includes('Error') || status.includes('closed') || status.includes('access')) {
@@ -441,9 +452,9 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
         return `${avatar.seed} is talking...`;
     }
     if (isListening) {
-        return 'Listening...';
+        return 'Listening... Tap avatar to stop';
     }
-    return 'Press and hold the avatar to speak';
+    return 'Tap the avatar to speak';
   };
 
   return (
@@ -514,11 +525,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       <footer className="flex flex-col items-center justify-center p-4 border-t border-gray-200">
         <div 
           className={`relative select-none transition-transform duration-200 ${isSpeaking ? 'cursor-not-allowed' : 'cursor-pointer active:scale-110'}`}
-          onMouseDown={handleStartListening}
-          onMouseUp={handleStopListening}
-          onMouseLeave={handleStopListening}
-          onTouchStart={handleStartListening}
-          onTouchEnd={handleStopListening}
+          onClick={handleToggleListening}
         >
           <Avatar 
             config={avatar} 
