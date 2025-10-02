@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AvatarConfig, Voice, Personality, Transcript } from '../types';
+import type { AvatarConfig, Voice, Personality, Transcript, Board, Player, CellValue } from '../types';
 import type { LiveSession, LiveServerMessage } from '@google/genai';
-import { GoogleGenAI, Modality } from '@google/genai';
+import { GoogleGenAI, Modality, FunctionDeclaration, Type } from '@google/genai';
 import Avatar from './Avatar';
-import { MicrophoneIcon } from './icons/MicrophoneIcon';
+import TicTacToeBoard from './TicTacToeBoard';
 
 // --- Audio Utility Functions ---
 function encode(bytes: Uint8Array): string {
@@ -54,6 +54,33 @@ interface ChatScreenProps {
   onEndChat: () => void;
 }
 
+// --- Tool Declarations for Gemini ---
+const tools: FunctionDeclaration[] = [
+    {
+        name: 'startGame',
+        description: 'Starts a new game of Tic-Tac-Toe. Displays the board on the screen.',
+        parameters: { type: Type.OBJECT, properties: {} },
+    },
+    {
+        name: 'makeMove',
+        description: "Places a player's mark on the Tic-Tac-Toe board.",
+        parameters: {
+            type: Type.OBJECT,
+            properties: {
+                row: { type: Type.INTEGER, description: 'The row index (0, 1, or 2) of the move.' },
+                col: { type: Type.INTEGER, description: 'The column index (0, 1, or 2) of the move.' },
+                player: { type: Type.STRING, description: "The player making the move, either 'X' (user) or 'O' (AI)." }
+            },
+            required: ['row', 'col', 'player'],
+        },
+    },
+    {
+        name: 'resetGame',
+        description: 'Resets the Tic-Tac-Toe board for a new game.',
+        parameters: { type: Type.OBJECT, properties: {} },
+    }
+];
+
 const ChatScreen: React.FC<ChatScreenProps> = ({
   avatar,
   voice,
@@ -65,6 +92,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   const [currentInput, setCurrentInput] = useState('');
   const [currentOutput, setCurrentOutput] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [gameBoard, setGameBoard] = useState<Board | null>(null);
 
   const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -84,6 +112,35 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcripts, currentInput, currentOutput]);
+
+  const checkWinner = useCallback((board: Board): { winner: Player; line: number[][] } | 'draw' | null => {
+    const lines = [
+      // Rows
+      [[0, 0], [0, 1], [0, 2]],
+      [[1, 0], [1, 1], [1, 2]],
+      [[2, 0], [2, 1], [2, 2]],
+      // Columns
+      [[0, 0], [1, 0], [2, 0]],
+      [[0, 1], [1, 1], [2, 1]],
+      [[0, 2], [1, 2], [2, 2]],
+      // Diagonals
+      [[0, 0], [1, 1], [2, 2]],
+      [[0, 2], [1, 1], [2, 0]],
+    ];
+
+    for (const line of lines) {
+      const [a, b, c] = line;
+      if (board[a[0]][a[1]] && board[a[0]][a[1]] === board[b[0]][b[1]] && board[a[0]][a[1]] === board[c[0]][c[1]]) {
+        return { winner: board[a[0]][a[1]] as Player, line };
+      }
+    }
+
+    if (board.flat().every(cell => cell !== '')) {
+      return 'draw';
+    }
+
+    return null;
+  }, []);
 
   const connectToGemini = useCallback(async () => {
     setStatus('Getting ready...');
@@ -114,7 +171,6 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
                 const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
                 const int16Data = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) {
-                  // Convert float32 to int16, clamping to avoid clipping
                   int16Data[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
                 }
                 const pcmBlob = {
@@ -133,6 +189,54 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
              }
           },
           onmessage: async (message: LiveServerMessage) => {
+             if (message.toolCall) {
+                const results = [];
+                for (const call of message.toolCall.functionCalls) {
+                    let result;
+                    if (call.name === 'startGame') {
+                        setGameBoard(Array(3).fill(null).map(() => Array(3).fill('')));
+                        result = { success: true };
+                    } else if (call.name === 'resetGame') {
+                        setGameBoard(null);
+                        result = { success: true };
+                    } else if (call.name === 'makeMove') {
+                        const { row, col, player } = call.args as { row: number; col: number; player: Player; };
+                        if (row < 0 || row > 2 || col < 0 || col > 2) {
+                            result = { success: false, error: 'Invalid coordinates.' };
+                        } else {
+                            setGameBoard(prevBoard => {
+                                if (!prevBoard || prevBoard[row][col] !== '') {
+                                    result = { success: false, error: 'This cell is already taken.' };
+                                    return prevBoard;
+                                }
+                                const newBoard = prevBoard.map(r => [...r]);
+                                newBoard[row][col] = player;
+
+                                const winnerInfo = checkWinner(newBoard);
+                                if (winnerInfo) {
+                                    if (winnerInfo === 'draw') {
+                                        result = { success: true, gameState: 'draw' };
+                                    } else {
+                                        result = { success: true, gameState: winnerInfo.winner === 'X' ? 'user_wins' : 'ai_wins' };
+                                    }
+                                } else {
+                                    result = { success: true, gameState: 'continue' };
+                                }
+                                return newBoard;
+                            });
+                        }
+                    }
+                    results.push({ id: call.id, name: call.name, response: { result } });
+                }
+
+                if (results.length > 0) {
+                    sessionPromiseRef.current?.then((session) => {
+                        session.sendToolResponse({ functionResponses: results });
+                    });
+                }
+            }
+
+
             if (message.serverContent?.outputTranscription) {
               const text = message.serverContent.outputTranscription.text;
               currentOutputRef.current += text;
@@ -161,11 +265,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
             if (base64Audio && outputAudioContextRef.current) {
                 setIsSpeaking(true);
                 const audioContext = outputAudioContextRef.current;
-
-                // Resume AudioContext if it's suspended (e.g., by browser auto-play policies)
-                if (audioContext.state === 'suspended') {
-                    await audioContext.resume();
-                }
+                if (audioContext.state === 'suspended') { await audioContext.resume(); }
 
                 nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContext.currentTime);
                 const audioBuffer = await decodeAudioData(decode(base64Audio), audioContext, 24000, 1);
@@ -175,9 +275,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
                 
                 source.onended = () => {
                     audioSourcesRef.current.delete(source);
-                    if(audioSourcesRef.current.size === 0) {
-                      setIsSpeaking(false);
-                    }
+                    if(audioSourcesRef.current.size === 0) { setIsSpeaking(false); }
                 };
                 
                 source.start(nextStartTimeRef.current);
@@ -186,9 +284,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
             }
             
             if (message.serverContent?.interrupted) {
-              for (const source of audioSourcesRef.current.values()) {
-                  source.stop();
-              }
+              for (const source of audioSourcesRef.current.values()) { source.stop(); }
               audioSourcesRef.current.clear();
               setIsSpeaking(false);
               nextStartTimeRef.current = 0;
@@ -210,6 +306,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
           systemInstruction: personality.systemInstruction,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
+          tools: [{functionDeclarations: tools}],
         },
       });
 
@@ -219,7 +316,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       console.error('Failed to initialize Gemini AI:', error);
       setStatus('Failed to initialize. Check console for details.');
     }
-  }, [voice, personality.systemInstruction]);
+  }, [voice, personality.systemInstruction, checkWinner]);
 
   useEffect(() => {
     connectToGemini();
@@ -227,12 +324,8 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
     return () => {
         sessionPromiseRef.current?.then((session) => session.close());
         streamRef.current?.getTracks().forEach(track => track.stop());
-        if(scriptProcessorRef.current) {
-            scriptProcessorRef.current.disconnect();
-        }
-        if (mediaStreamSourceRef.current) {
-            mediaStreamSourceRef.current.disconnect();
-        }
+        if(scriptProcessorRef.current) { scriptProcessorRef.current.disconnect(); }
+        if (mediaStreamSourceRef.current) { mediaStreamSourceRef.current.disconnect(); }
         inputAudioContextRef.current?.close().catch(console.error);
         outputAudioContextRef.current?.close().catch(console.error);
     };
@@ -276,6 +369,12 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
         )}
         <div ref={transcriptEndRef} />
       </div>
+
+       {gameBoard && (
+        <div className="p-4 border-t border-gray-200 flex justify-center items-center bg-indigo-100/50">
+          <TicTacToeBoard board={gameBoard} />
+        </div>
+      )}
 
       <footer className="flex flex-col items-center justify-center p-4 border-t border-gray-200">
         <div className="relative">

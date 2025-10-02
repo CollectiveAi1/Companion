@@ -1,18 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+
+import React, { useEffect, useRef } from 'react';
 import type { AvatarConfig, Voice, Personality } from '../types';
 import { AVATAR_STYLES, VOICES, PERSONALITIES } from '../constants';
 import Avatar from './Avatar';
 import { SparkleIcon } from './icons/SparkleIcon';
 
 interface CustomizationScreenProps {
-  initialAvatar: AvatarConfig;
-  initialVoice: Voice;
-  initialPersonality: Personality;
-  onStartChat: (
-    avatar: AvatarConfig,
-    voice: Voice,
-    personality: Personality
-  ) => void;
+  avatar: AvatarConfig;
+  voice: Voice;
+  personality: Personality;
+  onAvatarChange: (avatar: AvatarConfig) => void;
+  onVoiceChange: (voice: Voice) => void;
+  onPersonalityChange: (personality: Personality) => void;
+  onStartChat: () => void;
 }
 
 const VOICE_PREVIEWS: Record<Voice, string> = {
@@ -25,15 +25,14 @@ const VOICE_PREVIEWS: Record<Voice, string> = {
 
 
 const CustomizationScreen: React.FC<CustomizationScreenProps> = ({
-  initialAvatar,
-  initialVoice,
-  initialPersonality,
+  avatar,
+  voice,
+  personality,
+  onAvatarChange,
+  onVoiceChange,
+  onPersonalityChange,
   onStartChat,
 }) => {
-  const [avatar, setAvatar] = useState<AvatarConfig>(initialAvatar);
-  const [voice, setVoice] = useState<Voice>(initialVoice);
-  const [personality, setPersonality] = useState<Personality>(initialPersonality);
-  
   const audioRef = useRef<HTMLAudioElement | null>(null);
   if (audioRef.current === null) {
       audioRef.current = new Audio();
@@ -62,7 +61,7 @@ const CustomizationScreen: React.FC<CustomizationScreenProps> = ({
   };
   
   const handleVoiceSelection = (voiceId: Voice) => {
-    setVoice(voiceId);
+    onVoiceChange(voiceId);
     playVoicePreview(voiceId);
   };
 
@@ -71,7 +70,7 @@ const CustomizationScreen: React.FC<CustomizationScreenProps> = ({
     if (audioRef.current) {
       audioRef.current.pause();
     }
-    onStartChat(avatar, voice, personality);
+    onStartChat();
   };
 
   return (
@@ -91,11 +90,11 @@ const CustomizationScreen: React.FC<CustomizationScreenProps> = ({
               <label className="block text-sm font-medium text-gray-700">Style</label>
               <div className="flex flex-wrap gap-2 mt-1">
                 {AVATAR_STYLES.map(style => (
-                  <button key={style.id} onClick={() => setAvatar(prev => ({ ...prev, style: style.id }))} className={`px-3 py-1 text-sm rounded-full transition-colors ${avatar.style === style.id ? 'bg-purple-600 text-white' : 'bg-gray-200 hover:bg-purple-200'}`}>{style.name}</button>
+                  <button key={style.id} onClick={() => onAvatarChange({ ...avatar, style: style.id })} className={`px-3 py-1 text-sm rounded-full transition-colors ${avatar.style === style.id ? 'bg-purple-600 text-white' : 'bg-gray-200 hover:bg-purple-200'}`}>{style.name}</button>
                 ))}
               </div>
               <label className="block text-sm font-medium text-gray-700 mt-3">Name or Keyword</label>
-              <input type="text" value={avatar.seed} onChange={e => setAvatar(prev => ({...prev, seed: e.target.value}))} className="w-full mt-1 p-2 border border-gray-300 rounded-lg focus:ring-purple-500 focus:border-purple-500 bg-gray-50 text-gray-900"/>
+              <input type="text" value={avatar.seed} onChange={e => onAvatarChange({...avatar, seed: e.target.value})} className="w-full mt-1 p-2 border border-gray-300 rounded-lg focus:ring-purple-500 focus:border-purple-500 bg-gray-50 text-gray-900"/>
             </div>
           </div>
         </section>
@@ -115,7 +114,7 @@ const CustomizationScreen: React.FC<CustomizationScreenProps> = ({
           <h2 className="text-xl font-semibold mb-3 text-blue-700">3. Pick a Personality</h2>
           <div className="space-y-3">
             {PERSONALITIES.map(p => (
-              <div key={p.id} onClick={() => setPersonality(p)} className={`flex items-center gap-4 p-3 rounded-lg cursor-pointer transition-all ${personality.id === p.id ? 'bg-blue-500 text-white shadow-lg ring-2 ring-blue-300' : 'bg-gray-100 hover:bg-blue-100'}`}>
+              <div key={p.id} onClick={() => onPersonalityChange(p)} className={`flex items-center gap-4 p-3 rounded-lg cursor-pointer transition-all ${personality.id === p.id ? 'bg-blue-500 text-white shadow-lg ring-2 ring-blue-300' : 'bg-gray-100 hover:bg-blue-100'}`}>
                 <SparkleIcon className="w-8 h-8 flex-shrink-0" />
                 <div>
                   <h3 className="font-bold">{p.name}</h3>

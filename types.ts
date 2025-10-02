@@ -1,4 +1,3 @@
-
 export enum AppScreen {
   CUSTOMIZATION,
   CHAT,
@@ -25,3 +24,8 @@ export interface Transcript {
   speaker: 'user' | 'ai';
   text: string;
 }
+
+// Types for Tic-Tac-Toe Game
+export type Player = 'X' | 'O';
+export type CellValue = Player | '';
+export type Board = CellValue[][];
