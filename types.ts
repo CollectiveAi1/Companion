@@ -41,3 +41,11 @@ export type WinnerInfo = {
   winner: Player;
   line: [[number, number], [number, number], [number, number]];
 };
+
+// For Guess the Number Game
+export interface GuessTheNumberState {
+  secretNumber: number;
+  min: number;
+  max: number;
+  guesses: { value: number; hint: 'higher' | 'lower' | 'correct' }[];
+}

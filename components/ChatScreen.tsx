@@ -1,10 +1,11 @@
 import { GoogleGenAI, LiveSession, LiveServerMessage, Modality, FunctionDeclaration, Type, Blob } from '@google/genai';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AvatarConfig, Voice, Personality, Transcript, Board, WinnerInfo, Player } from '../types';
+import type { AvatarConfig, Voice, Personality, Transcript, Board, WinnerInfo, Player, GuessTheNumberState } from '../types';
 import Avatar from './Avatar';
 import TicTacToeBoard from './TicTacToeBoard';
 import DrawingCanvas from './DrawingCanvas';
 import { PencilIcon } from './icons/PencilIcon';
+import GuessTheNumberGame from './GuessTheNumberGame';
 
 // Encoding/Decoding functions as per guidelines
 function encode(bytes: Uint8Array): string {
@@ -32,7 +33,6 @@ async function decodeAudioData(
     sampleRate: number,
     numChannels: number,
 ): Promise<AudioBuffer> {
-    // FIX: Corrected typo from Int116Array to Int16Array.
     const dataInt16 = new Int16Array(data.buffer);
     const frameCount = dataInt16.length / numChannels;
     const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
@@ -96,6 +96,42 @@ const generateAndShowImageFunctionDeclaration: FunctionDeclaration = {
     },
 };
 
+const startGuessTheNumberFunctionDeclaration: FunctionDeclaration = {
+    name: 'startGuessTheNumber',
+    description: 'Starts a new game of "Guess the Number".',
+    parameters: { type: Type.OBJECT, properties: {} },
+};
+
+const handleGuessFunctionDeclaration: FunctionDeclaration = {
+    name: 'handleGuess',
+    description: "Handles the user's guess in the 'Guess the Number' game.",
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            guess: { type: Type.NUMBER, description: 'The number the user guessed.' },
+        },
+        required: ['guess'],
+    },
+};
+
+const endGuessTheNumberFunctionDeclaration: FunctionDeclaration = {
+    name: 'endGuessTheNumber',
+    description: 'Ends the current game of "Guess the Number".',
+    parameters: { type: Type.OBJECT, properties: {} },
+};
+
+const playRockPaperScissorsFunctionDeclaration: FunctionDeclaration = {
+    name: 'playRockPaperScissors',
+    description: 'Plays a round of Rock, Paper, Scissors.',
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            playerChoice: { type: Type.STRING, description: "The user's choice: 'rock', 'paper', or 'scissors'." },
+        },
+        required: ['playerChoice'],
+    },
+};
+
 const ALL_TOOLS = [{ functionDeclarations: [
     playTicTacToeFunctionDeclaration,
     aiMakeMoveFunctionDeclaration,
@@ -103,17 +139,22 @@ const ALL_TOOLS = [{ functionDeclarations: [
     startDrawingFunctionDeclaration,
     endDrawingFunctionDeclaration,
     generateAndShowImageFunctionDeclaration,
+    startGuessTheNumberFunctionDeclaration,
+    handleGuessFunctionDeclaration,
+    endGuessTheNumberFunctionDeclaration,
+    playRockPaperScissorsFunctionDeclaration,
 ] }];
 
 
 interface ChatScreenProps {
+  outputAudioContext: AudioContext;
   avatar: AvatarConfig;
   voice: Voice;
   personality: Personality;
   onEndChat: () => void;
 }
 
-const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onEndChat }) => {
+const ChatScreen: React.FC<ChatScreenProps> = ({ outputAudioContext, avatar, voice, personality, onEndChat }) => {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isConnecting, setIsConnecting] = useState(true);
@@ -121,17 +162,18 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
   const [error, setError] = useState<string | null>(null);
   
   // Game States
-  const [isGameActive, setIsGameActive] = useState(false);
+  const [isTicTacToeActive, setIsTicTacToeActive] = useState(false);
   const [board, setBoard] = useState<Board>([['', '', ''], ['', '', ''], ['', '', '']]);
   const [currentPlayer, setCurrentPlayer] = useState<Player>('X');
   const [winnerInfo, setWinnerInfo] = useState<WinnerInfo | 'draw' | null>(null);
   const [isDrawingCanvasVisible, setIsDrawingCanvasVisible] = useState(false);
+  const [guessTheNumberState, setGuessTheNumberState] = useState<GuessTheNumberState | null>(null);
 
   const aiRef = useRef<GoogleGenAI | null>(null);
   const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
-  const gameStateRef = useRef({ board, currentPlayer, isGameActive });
+  const gameStateRef = useRef({ board, currentPlayer, isTicTacToeActive });
   
-  const audioContextRef = useRef<AudioContext | null>(null);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -141,13 +183,16 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
 
   const currentInputTranscriptionRef = useRef('');
   const currentOutputTranscriptionRef = useRef('');
-  const isAiSpeakingRef = useRef(false);
-  const isUserTurnRef = useRef(false);
+  const isListeningRef = useRef(false);
+  
+  // Refs to track transcription turns and prevent duplicate messages
+  const isNewUserTurnRef = useRef(true);
+  const isNewModelTurnRef = useRef(true);
 
   // Update game state ref whenever state changes
   useEffect(() => {
-    gameStateRef.current = { board, currentPlayer, isGameActive };
-  }, [board, currentPlayer, isGameActive]);
+    gameStateRef.current = { board, currentPlayer, isTicTacToeActive };
+  }, [board, currentPlayer, isTicTacToeActive]);
 
   const addTranscript = useCallback((message: Omit<Transcript, 'id' | 'timestamp'>) => {
     setTranscript(prev => [...prev, { ...message, id: crypto.randomUUID(), timestamp: Date.now() }]);
@@ -202,15 +247,6 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
     }
     aiRef.current = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
-    try {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-    } catch (e) {
-        console.error("Error creating AudioContext:", e);
-        setError("Could not initialize audio. Please check browser permissions.");
-        setIsConnecting(false);
-        return;
-    }
-
     sessionPromiseRef.current = aiRef.current.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
@@ -224,18 +260,17 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
         callbacks: {
             onopen: () => {
                 setIsConnecting(false);
-                addTranscript({ role: 'system', parts: [{ text: `Connecting to ${avatar.seed}...` }]});
-                // Send an initial prompt to get a greeting
+                // Send an initial prompt to get a greeting, making the AI start the conversation.
                  sessionPromiseRef.current?.then(session => {
                     session.sendText("Hi, introduce yourself with a friendly greeting based on your personality.");
                 });
             },
             onmessage: async (message: LiveServerMessage) => {
                  if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
-                    isAiSpeakingRef.current = true;
                     setIsSpeaking(true);
-                    if(isUserTurnRef.current) {
-                        isUserTurnRef.current = false;
+                     if(isListeningRef.current) {
+                        isListeningRef.current = false;
+                        setIsListening(false);
                         stopAudioProcessing();
                     }
                  }
@@ -243,44 +278,43 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
                 if (message.serverContent) {
                     // Handle transcription
                     if (message.serverContent.inputTranscription) {
-                        const text = message.serverContent.inputTranscription.text;
-                        const fullText = currentInputTranscriptionRef.current + text;
-                        if (transcript[transcript.length - 1]?.role !== 'user') {
-                            addTranscript({ role: 'user', parts: [{ text: fullText }] });
+                        currentInputTranscriptionRef.current += message.serverContent.inputTranscription.text;
+                        if (isNewUserTurnRef.current) {
+                            isNewUserTurnRef.current = false;
+                            isNewModelTurnRef.current = true; // Prepare for the model's response turn
+                            addTranscript({ role: 'user', parts: [{ text: currentInputTranscriptionRef.current }] });
                         } else {
-                            updateLastTranscript(prev => ({ ...prev, parts: [{ text: fullText }] }));
+                            updateLastTranscript(prev => ({ ...prev, parts: [{ text: currentInputTranscriptionRef.current }] }));
                         }
-                        currentInputTranscriptionRef.current = fullText;
                     }
                     if (message.serverContent.outputTranscription) {
-                        const text = message.serverContent.outputTranscription.text;
-                        const fullText = currentOutputTranscriptionRef.current + text;
-                        if (transcript[transcript.length - 1]?.role !== 'model') {
-                            addTranscript({ role: 'model', parts: [{ text: fullText }] });
+                        currentOutputTranscriptionRef.current += message.serverContent.outputTranscription.text;
+                        if (isNewModelTurnRef.current) {
+                            isNewModelTurnRef.current = false;
+                            isNewUserTurnRef.current = true; // Prepare for the user's next turn
+                            addTranscript({ role: 'model', parts: [{ text: currentOutputTranscriptionRef.current }] });
                         } else {
-                            updateLastTranscript(prev => ({ ...prev, parts: [{ text: fullText }] }));
+                            updateLastTranscript(prev => ({ ...prev, parts: [{ text: currentOutputTranscriptionRef.current }] }));
                         }
-                        currentOutputTranscriptionRef.current = fullText;
                     }
                     if (message.serverContent.turnComplete) {
                         currentInputTranscriptionRef.current = '';
                         currentOutputTranscriptionRef.current = '';
+                        isNewUserTurnRef.current = true;
+                        isNewModelTurnRef.current = true;
                     }
                     
                     const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData.data;
                     if (audioData) {
-                        const ctx = audioContextRef.current;
-                        if (!ctx) return;
-                        nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-                        const audioBuffer = await decodeAudioData(decode(audioData), ctx, 24000, 1);
-                        const source = ctx.createBufferSource();
+                        nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputAudioContext.currentTime);
+                        const audioBuffer = await decodeAudioData(decode(audioData), outputAudioContext, 24000, 1);
+                        const source = outputAudioContext.createBufferSource();
                         source.buffer = audioBuffer;
-                        source.connect(ctx.destination);
+                        source.connect(outputAudioContext.destination);
                         
                         source.addEventListener('ended', () => {
                             outputSourcesRef.current.delete(source);
                             if (outputSourcesRef.current.size === 0) {
-                                isAiSpeakingRef.current = false;
                                 setIsSpeaking(false);
                             }
                         });
@@ -293,11 +327,12 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
 
                 if (message.toolCall) {
                     for (const fc of message.toolCall.functionCalls) {
+                        let toolResponse = null;
                         if (fc.name === 'playTicTacToe') {
                             setBoard([['', '', ''], ['', '', ''], ['', '', '']]);
                             setCurrentPlayer('X');
                             setWinnerInfo(null);
-                            setIsGameActive(true);
+                            setIsTicTacToeActive(true);
                         } else if (fc.name === 'aiMakeMove') {
                             const { row, col } = fc.args;
                             if (gameStateRef.current.board[row][col] === '') {
@@ -306,14 +341,14 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
                                 const gameResult = checkWinner(newBoard);
                                 if(gameResult) {
                                     setWinnerInfo(gameResult);
-                                    setIsGameActive(false);
+                                    setIsTicTacToeActive(false);
                                     sessionPromiseRef.current?.then(session => session.sendText(`The game is over. The result is ${gameResult === 'draw' ? 'a draw' : `the winner is ${gameResult.winner}`}.`));
                                 } else {
                                     setCurrentPlayer('X');
                                 }
                             }
                         } else if (fc.name === 'endGame') {
-                            setIsGameActive(false);
+                            setIsTicTacToeActive(false);
                         } else if (fc.name === 'startDrawing') {
                             setIsDrawingCanvasVisible(true);
                         } else if (fc.name === 'endDrawing') {
@@ -334,6 +369,49 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
                                 console.error("Image generation failed:", e);
                                 addTranscript({role: 'model', parts: [{ text: "Sorry, I couldn't create that image."}]});
                              }
+                        } else if (fc.name === 'startGuessTheNumber') {
+                            setGuessTheNumberState({
+                                secretNumber: Math.floor(Math.random() * 100) + 1,
+                                min: 1,
+                                max: 100,
+                                guesses: [],
+                            });
+                        } else if (fc.name === 'handleGuess') {
+                            const guess = fc.args.guess;
+                            setGuessTheNumberState(prevState => {
+                                if (!prevState) return null;
+                                let hint: 'higher' | 'lower' | 'correct' = 'correct';
+                                if (guess < prevState.secretNumber) hint = 'lower';
+                                if (guess > prevState.secretNumber) hint = 'higher';
+                                const newGuesses = [...prevState.guesses, { value: guess, hint }];
+                                toolResponse = { result: hint };
+                                return { ...prevState, guesses: newGuesses };
+                            });
+                        } else if (fc.name === 'endGuessTheNumber') {
+                            setGuessTheNumberState(null);
+                        } else if (fc.name === 'playRockPaperScissors') {
+                            const choices = ['rock', 'paper', 'scissors'];
+                            const playerChoice = fc.args.playerChoice.toLowerCase();
+                            const aiChoice = choices[Math.floor(Math.random() * choices.length)];
+                            let result;
+                            if (playerChoice === aiChoice) {
+                                result = "It's a draw!";
+                            } else if (
+                                (playerChoice === 'rock' && aiChoice === 'scissors') ||
+                                (playerChoice === 'scissors' && aiChoice === 'paper') ||
+                                (playerChoice === 'paper' && aiChoice === 'rock')
+                            ) {
+                                result = "You win!";
+                            } else {
+                                result = "I win!";
+                            }
+                             sessionPromiseRef.current?.then(session => {
+                                session.sendText(`I chose ${aiChoice}. ${result}`);
+                            });
+                        }
+
+                        if (toolResponse) {
+                            sessionPromiseRef.current?.then(session => session.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: toolResponse } }));
                         }
                     }
                 }
@@ -362,52 +440,54 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleMicClick = async () => {
-    if (isAiSpeakingRef.current || isConnecting) return;
-
-    // Resume audio context on first user interaction
-    if (audioContextRef.current?.state === 'suspended') {
-      await audioContextRef.current.resume();
-    }
-
-    if (isUserTurnRef.current) {
-        isUserTurnRef.current = false;
-        stopAudioProcessing();
-        setIsListening(false);
-    } else {
-        isUserTurnRef.current = true;
-        setIsListening(true);
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            streamRef.current = stream;
-            const source = audioContextRef.current!.createMediaStreamSource(stream);
-            mediaStreamSourceRef.current = source;
-            const scriptProcessor = audioContextRef.current!.createScriptProcessor(4096, 1, 1);
-            scriptProcessorRef.current = scriptProcessor;
-
-            scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
-                const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-                const l = inputData.length;
-                const int16 = new Int16Array(l);
-                for (let i = 0; i < l; i++) {
-                    int16[i] = inputData[i] * 32768;
-                }
-                const pcmBlob: Blob = { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
-                sessionPromiseRef.current?.then((session) => session.sendRealtimeInput({ media: pcmBlob }));
-            };
-            source.connect(scriptProcessor);
-            scriptProcessor.connect(audioContextRef.current!.destination);
-        } catch (err) {
-            console.error("Mic access failed:", err);
-            setError("Microphone access denied.");
-            setIsListening(false);
-            isUserTurnRef.current = false;
+  const handleMicDown = async () => {
+    if (isSpeaking || isConnecting || isListeningRef.current) return;
+    
+    isListeningRef.current = true;
+    setIsListening(true);
+    try {
+        if (!inputAudioContextRef.current) {
+          inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
         }
+        const inputAudioContext = inputAudioContextRef.current;
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        streamRef.current = stream;
+        const source = inputAudioContext.createMediaStreamSource(stream);
+        mediaStreamSourceRef.current = source;
+        const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
+        scriptProcessorRef.current = scriptProcessor;
+
+        scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
+            const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
+            const l = inputData.length;
+            const int16 = new Int16Array(l);
+            for (let i = 0; i < l; i++) {
+                int16[i] = inputData[i] * 32768;
+            }
+            const pcmBlob: Blob = { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
+            sessionPromiseRef.current?.then((session) => session.sendRealtimeInput({ media: pcmBlob }));
+        };
+        source.connect(scriptProcessor);
+        scriptProcessor.connect(inputAudioContext.destination);
+    } catch (err) {
+        console.error("Mic access failed:", err);
+        setError("Microphone access denied.");
+        setIsListening(false);
+        isListeningRef.current = false;
     }
   };
   
+  const handleMicUp = () => {
+    if (!isListeningRef.current) return;
+    
+    isListeningRef.current = false;
+    setIsListening(false);
+    stopAudioProcessing();
+  };
+  
   const handleCellClick = useCallback((row: number, col: number) => {
-      if (board[row][col] || winnerInfo || currentPlayer !== 'X' || !isGameActive) return;
+      if (board[row][col] || winnerInfo || currentPlayer !== 'X' || !isTicTacToeActive) return;
 
       const newBoard = board.map((r, rI) => r.map((c, cI) => (rI === row && cI === col ? 'X' : c))) as Board;
       setBoard(newBoard);
@@ -415,13 +495,13 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
       const gameResult = checkWinner(newBoard);
       if (gameResult) {
           setWinnerInfo(gameResult);
-          setIsGameActive(false);
+          setIsTicTacToeActive(false);
           sessionPromiseRef.current?.then(session => session.sendText(`I made my move. The game is over. The result is ${gameResult === 'draw' ? 'a draw' : `the winner is ${gameResult.winner}`}.`));
       } else {
           setCurrentPlayer('O');
           sessionPromiseRef.current?.then(session => session.sendText(`I made my move to row ${row}, column ${col}. Now it is your turn to make a move.`));
       }
-  }, [board, winnerInfo, currentPlayer, isGameActive, checkWinner]);
+  }, [board, winnerInfo, currentPlayer, isTicTacToeActive, checkWinner]);
   
   const handleDrawingSubmit = useCallback(async (imageDataUrl: string) => {
     setIsDrawingCanvasVisible(false);
@@ -474,9 +554,14 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
                     </div>
                 </div>
             ))}
-             {isGameActive && (
+             {isTicTacToeActive && (
                 <div className="flex justify-center">
                     <TicTacToeBoard board={board} onCellClick={handleCellClick} currentPlayer={currentPlayer} winnerInfo={winnerInfo} />
+                </div>
+            )}
+            {guessTheNumberState && (
+                <div className="flex justify-center">
+                    <GuessTheNumberGame gameState={guessTheNumberState} />
                 </div>
             )}
         </div>
@@ -486,11 +571,20 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
       <footer className="p-4 bg-white/80 border-t">
         {error && <p className="text-center text-red-500 mb-2">{error}</p>}
         <div className="flex flex-col items-center justify-center">
-            <button onClick={handleMicClick} disabled={isConnecting || isSpeaking} className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 transform text-white disabled:bg-gray-400 ${isListening ? 'bg-red-500 scale-110' : 'bg-blue-500 hover:bg-blue-600'}`}>
+            <button 
+                onMouseDown={handleMicDown}
+                onMouseUp={handleMicUp}
+                onTouchStart={handleMicDown}
+                onTouchEnd={handleMicUp}
+                onMouseLeave={handleMicUp} // Stop if mouse leaves button while pressed
+                disabled={isConnecting || isSpeaking} 
+                className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 transform text-white disabled:bg-gray-400 ${isListening ? 'bg-red-500 scale-110' : 'bg-blue-500 hover:bg-blue-600'}`}
+                aria-label={isListening ? 'Release to stop speaking' : 'Press and hold to speak'}
+            >
                 <Avatar config={avatar} className="w-20 h-20" isListening={isListening} isSpeaking={isSpeaking}/>
             </button>
             <p className="text-sm text-gray-500 mt-2 h-5">
-                {isConnecting ? 'Connecting...' : isSpeaking ? `${avatar.seed} is speaking...` : isListening ? 'Listening... Tap to stop' : 'Tap the avatar to speak'}
+                {isConnecting ? 'Connecting...' : isSpeaking ? `${avatar.seed} is speaking...` : isListening ? 'Listening...' : 'Hold the avatar to speak'}
             </p>
         </div>
       </footer>

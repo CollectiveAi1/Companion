@@ -16,20 +16,23 @@
 }
 </script>
 <style>
+  /* A more subtle breathing animation: slower and less pronounced */
   @keyframes breathing {
     0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.03); }
+    50% { transform: scale(1.02); }
   }
+  /* A more expressive and natural talking animation with a gentle bob and rotation */
   @keyframes talking {
-    0%, 100% { transform: translateY(0) scale(1.02); }
-    25% { transform: translateY(-4px) scale(1.04); }
-    75% { transform: translateY(2px) scale(1); }
+    0%, 100% { transform: translateY(0) scale(1.02) rotate(0deg); }
+    20% { transform: translateY(-5px) scale(1.04) rotate(-2deg); }
+    60% { transform: translateY(2px) scale(1) rotate(1deg); }
+    80% { transform: translateY(-1px) scale(1.03) rotate(0deg); }
   }
   .animate-breathing {
-    animation: breathing 4s ease-in-out infinite;
+    animation: breathing 5s ease-in-out infinite;
   }
   .animate-talking {
-    animation: talking 0.8s ease-in-out infinite;
+    animation: talking 1.2s ease-in-out infinite;
   }
 </style>
 </head>

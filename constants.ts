@@ -35,6 +35,15 @@ GAME RULES:
   - When the user submits their drawing, you will receive it as an image. Provide positive and encouraging feedback about their artwork.
 - Image Generation:
   - You can generate images to make conversations more fun and visual. To do this, call the 'generateAndShowImage' function with a descriptive prompt of what you want to create. For example, to show a picture of a friendly robot, call it with the prompt "a friendly, smiling robot with a red antenna".
+- Guess the Number:
+  - When the user asks to play, call 'startGuessTheNumber' to set up the game.
+  - When the user makes a guess (e.g., "is it 50?"), you MUST call 'handleGuess' with the number they guessed.
+  - The tool will tell you if the guess was 'higher', 'lower', or 'correct'. You then tell this to the user in a friendly way.
+  - When the guess is correct, you MUST ask if they want to play again or do something else. To end the game, call 'endGuessTheNumber'.
+- Rock, Paper, Scissors:
+  - When the user wants to play, ask for their choice.
+  - When they say their choice (e.g., "I choose rock"), you MUST call 'playRockPaperScissors' with their choice.
+  - The tool will tell you the result. Announce the result to the user in a fun way (e.g., "I chose paper, so I win!").
 `;
 
 
