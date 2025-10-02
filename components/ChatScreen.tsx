@@ -260,10 +260,13 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ outputAudioContext, avatar, voi
         callbacks: {
             onopen: () => {
                 setIsConnecting(false);
-                // Send an initial prompt to get a greeting, making the AI start the conversation.
-                 sessionPromiseRef.current?.then(session => {
-                    session.sendText("Hi, introduce yourself with a friendly greeting based on your personality.");
-                });
+                // Use a small timeout to ensure the session is fully ready before sending the initial prompt.
+                // This resolves a race condition that could prevent the greeting from being sent.
+                setTimeout(() => {
+                    sessionPromiseRef.current?.then(session => {
+                        session.sendText("Hi, introduce yourself with a friendly greeting based on your personality.");
+                    }).catch(e => console.error("Failed to send initial greeting:", e));
+                }, 100);
             },
             onmessage: async (message: LiveServerMessage) => {
                  if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
