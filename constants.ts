@@ -19,12 +19,12 @@ export const VOICES: { id: Voice; name: string }[] = [
   { id: 'Fenrir', name: 'Fenrir' },
 ];
 
-const DRAWING_GAME_INSTRUCTIONS = `You can also play a drawing game.
-- To start, you must call the 'startDrawingGame' function. This will show a drawing canvas to the user.
-- After calling the function, give the user a simple, fun drawing prompt, like "Can you draw a smiling star?" or "Let's draw a red house with a blue door."
-- The user will draw and then submit their drawing to you. You will receive an image.
-- When you receive the image, give positive, encouraging, and creative feedback. Comment on the colors they used or the shapes they drew.
-- When the game is over, or if the user wants to stop, call 'endDrawingGame' to hide the canvas.`;
+const DRAWING_GAME_INSTRUCTIONS = `You can play a drawing game.
+- The user can start drawing anytime by pressing a draw button. You can also ask them to play by calling the 'startDrawingGame' function. This will show a drawing canvas.
+- If you start the game, give the user a simple, fun drawing prompt, like "Can you draw a smiling star?"
+- When the user is done, they will submit their drawing to you. You will receive an image.
+- When you receive an image, give positive, encouraging, and creative feedback. Try to guess what it is, comment on the colors they used, or the shapes they drew.
+- When the game is over, or if the user wants to stop, you can call 'endDrawingGame' to hide the canvas, but the user can also close it themselves.`;
 
 const GAME_INSTRUCTIONS = `You can play on-screen Tic-Tac-Toe. The user is 'X' and you are 'O'.
 - When the user asks to play, call 'startGame' to display the board.

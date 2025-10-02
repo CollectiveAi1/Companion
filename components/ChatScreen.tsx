@@ -5,6 +5,7 @@ import { GoogleGenAI, Modality, FunctionDeclaration, Type } from '@google/genai'
 import Avatar from './Avatar';
 import TicTacToeBoard from './TicTacToeBoard';
 import DrawingCanvas from './DrawingCanvas';
+import { PencilIcon } from './icons/PencilIcon';
 
 // --- Audio Utility Functions ---
 function encode(bytes: Uint8Array): string {
@@ -102,6 +103,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   const [currentInput, setCurrentInput] = useState('');
   const [currentOutput, setCurrentOutput] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const [drawingCanvasVisible, setDrawingCanvasVisible] = useState(false);
 
   // Tic-Tac-Toe State
@@ -114,7 +116,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
     gameStateRef.current = { board: gameBoard, player: currentPlayer };
   }, [gameBoard, currentPlayer]);
 
-
+  const isListeningRef = useRef(false);
   const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   
@@ -244,6 +246,8 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
               scriptProcessorRef.current = inputAudioContextRef.current.createScriptProcessor(4096, 1, 1);
               
               scriptProcessorRef.current.onaudioprocess = (audioProcessingEvent) => {
+                if (!isListeningRef.current) return;
+                
                 const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
                 const int16Data = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) {
@@ -402,7 +406,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       console.error('Failed to initialize Gemini AI:', error);
       setStatus('Failed to initialize. Check console for details.');
     }
-  }, [voice, personality.systemInstruction, checkWinner, handleSubmitDrawing]);
+  }, [voice, personality.systemInstruction, checkWinner]);
 
   useEffect(() => {
     connectToGemini();
@@ -417,6 +421,30 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleStartListening = useCallback(() => {
+    if (isSpeaking || !status.includes('Connected')) return;
+    isListeningRef.current = true;
+    setIsListening(true);
+  }, [isSpeaking, status]);
+
+  const handleStopListening = useCallback(() => {
+    isListeningRef.current = false;
+    setIsListening(false);
+  }, []);
+
+  const getStatusText = () => {
+    if (status.includes('Connecting') || status.includes('Error') || status.includes('closed') || status.includes('access')) {
+        return status;
+    }
+    if (isSpeaking) {
+        return `${avatar.seed} is talking...`;
+    }
+    if (isListening) {
+        return 'Listening...';
+    }
+    return 'Press and hold the avatar to speak';
+  };
 
   return (
     <div className="flex flex-col h-full bg-blue-50/50 relative">
@@ -435,7 +463,16 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
             <p className="text-sm text-gray-500">{personality.name}</p>
           </div>
         </div>
-        <button onClick={onEndChat} className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition">End Chat</button>
+        <div className="flex items-center gap-2">
+            <button 
+                onClick={() => setDrawingCanvasVisible(true)} 
+                className="p-2 bg-yellow-400 text-white rounded-lg hover:bg-yellow-500 transition"
+                aria-label="Draw something"
+            >
+                <PencilIcon className="w-6 h-6" />
+            </button>
+            <button onClick={onEndChat} className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition">End Chat</button>
+        </div>
       </header>
 
       <div className="flex-grow p-4 overflow-y-auto space-y-4">
@@ -475,10 +512,22 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       )}
 
       <footer className="flex flex-col items-center justify-center p-4 border-t border-gray-200">
-        <div className="relative">
-          <Avatar config={avatar} className="w-24 h-24 mb-2" isListening={status.includes('Speak')} isSpeaking={isSpeaking}/>
+        <div 
+          className={`relative select-none transition-transform duration-200 ${isSpeaking ? 'cursor-not-allowed' : 'cursor-pointer active:scale-110'}`}
+          onMouseDown={handleStartListening}
+          onMouseUp={handleStopListening}
+          onMouseLeave={handleStopListening}
+          onTouchStart={handleStartListening}
+          onTouchEnd={handleStopListening}
+        >
+          <Avatar 
+            config={avatar} 
+            className="w-24 h-24 mb-2" 
+            isListening={isListening} 
+            isSpeaking={isSpeaking}
+          />
         </div>
-        <p className="text-gray-600 font-medium text-center h-6">{status}</p>
+        <p className="text-gray-600 font-medium text-center h-6">{getStatusText()}</p>
       </footer>
     </div>
   );
