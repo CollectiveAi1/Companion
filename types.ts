@@ -1,18 +1,17 @@
-import type { LiveSession } from '@google/genai';
+import React from 'react';
 
 export enum AppScreen {
-  CUSTOMIZATION,
-  CHAT,
+  CUSTOMIZATION = 'CUSTOMIZATION',
+  CHAT = 'CHAT',
 }
 
-export type AvatarStyle = 'adventurer' | 'bottts' | 'micah' | 'lorelei' | 'pixel-art' | 'fun-emoji' | 'shapes' | 'rings';
-
 export interface AvatarConfig {
-  style: AvatarStyle;
+  style: string;
   seed: string;
 }
 
-export type Voice = 'Zephyr' | 'Puck' | 'Charon' | 'Kore' | 'Fenrir';
+// As defined in the Gemini API documentation and used in the app
+export type Voice = 'Zephyr' | 'Puck' | 'Kore' | 'Charon';
 
 export interface Personality {
   id: string;
@@ -21,18 +20,24 @@ export interface Personality {
   systemInstruction: string;
 }
 
-export interface Transcript {
-  id: number;
-  speaker: 'user' | 'ai';
-  text: string;
+// For Chat
+export interface ChatMessage {
+    id: string;
+    role: 'user' | 'model' | 'system';
+    parts: { text: string; component?: React.ReactNode }[];
+    timestamp: number;
 }
 
-// Types for Tic-Tac-Toe Game
+
+// For Tic-Tac-Toe Game
 export type Player = 'X' | 'O';
-export type CellValue = Player | '';
-export type Board = CellValue[][];
-
-export interface WinnerInfo {
+export type Cell = Player | '';
+export type Board = [
+  [Cell, Cell, Cell],
+  [Cell, Cell, Cell],
+  [Cell, Cell, Cell]
+];
+export type WinnerInfo = {
   winner: Player;
-  line: number[][];
-}
+  line: [[number, number], [number, number], [number, number]];
+};

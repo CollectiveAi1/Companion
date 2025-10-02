@@ -36,7 +36,7 @@ const App: React.FC = () => {
     const savedVoice = localStorage.getItem('ai-friend-voice');
     return (savedVoice && VOICES.some(v => v.id === savedVoice))
       ? savedVoice as Voice
-      : VOICES[0].id;
+      : 'Zephyr'; // Set a specific, friendly default
   });
 
   const [personality, setPersonality] = useState<Personality>(() => {

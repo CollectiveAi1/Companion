@@ -199,7 +199,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ onClose, onSubmit }) => {
     }
   };
 
-  const ToolButton = ({ toolName, children }: { toolName: Tool, children: React.ReactNode}) => (
+  // FIX: Correctly type the ToolButton component to accept children, resolving TypeScript errors.
+  const ToolButton: React.FC<{ toolName: Tool; children: React.ReactNode }> = ({ toolName, children }) => (
     <button onClick={() => setTool(toolName)} className={`p-1.5 rounded-md transition-colors ${tool === toolName ? 'bg-blue-200' : 'hover:bg-gray-200'}`}>
         {children}
     </button>
@@ -213,7 +214,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ onClose, onSubmit }) => {
                 <div className="flex items-center gap-2">
                     <button onClick={onClose} className="px-3 py-2 text-sm bg-red-500 text-white rounded-md hover:bg-red-600 font-semibold">Close</button>
                     <div className="flex items-center gap-1 p-1 bg-white rounded-md border">
-                        {/* Fix: Passed icon components as children to ToolButton to satisfy the required 'children' prop. */}
                         <ToolButton toolName="brush"><PencilIcon className="w-6 h-6" /></ToolButton>
                         <ToolButton toolName="eraser"><EraserIcon className="w-6 h-6" /></ToolButton>
                         <ToolButton toolName="spray"><SprayIcon className="w-6 h-6" /></ToolButton>

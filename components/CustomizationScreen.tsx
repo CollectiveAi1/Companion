@@ -1,5 +1,6 @@
 
-import React, { useEffect, useRef } from 'react';
+
+import React, { useRef } from 'react';
 import type { AvatarConfig, Voice, Personality } from '../types';
 import { AVATAR_STYLES, VOICES, PERSONALITIES } from '../constants';
 import Avatar from './Avatar';
@@ -16,11 +17,10 @@ interface CustomizationScreenProps {
 }
 
 const VOICE_PREVIEWS: Record<Voice, string> = {
-  Zephyr: 'https://storage.googleapis.com/aistudio-samples/samantha-hi.mp3', // Warm female voice
-  Puck: 'https://storage.googleapis.com/aistudio-samples/lily-hi.mp3', // Cheerful female voice
   Charon: 'https://storage.googleapis.com/aistudio-samples/alex-hi.mp3', // Deep male voice
   Kore: 'https://storage.googleapis.com/aistudio-samples/tom-hi.mp3', // Friendly male voice
-  Fenrir: 'https://storage.googleapis.com/aistudio-samples/oliver-hi.mp3', // Energetic male voice
+  Zephyr: 'https://storage.googleapis.com/aistudio-samples/samantha-hi.mp3', // Warm female voice
+  Puck: 'https://storage.googleapis.com/aistudio-samples/lily-hi.mp3', // Cheerful female voice
 };
 
 
@@ -34,29 +34,20 @@ const CustomizationScreen: React.FC<CustomizationScreenProps> = ({
   onStartChat,
 }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  if (audioRef.current === null) {
-      audioRef.current = new Audio();
-  }
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    // Cleanup audio element on component unmount
-    return () => {
-      if (audio) {
-        audio.pause();
-        audio.src = '';
-      }
-    };
-  }, []);
-
+  
   const playVoicePreview = (voiceId: Voice) => {
-    const audio = audioRef.current;
-    if (!audio) return;
+    // If an audio preview is already playing, stop it.
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
 
     const audioUrl = VOICE_PREVIEWS[voiceId];
     if (audioUrl) {
-      audio.src = audioUrl;
-      audio.play().catch(e => console.error("Error playing audio preview:", e));
+      // Create a new Audio object directly inside the user-initiated event handler.
+      // This is the most reliable way to comply with browser autoplay policies.
+      const newAudio = new Audio(audioUrl);
+      audioRef.current = newAudio;
+      newAudio.play().catch(e => console.error("Error playing audio preview:", e));
     }
   };
   
@@ -102,7 +93,7 @@ const CustomizationScreen: React.FC<CustomizationScreenProps> = ({
         {/* Voice Section */}
         <section className="bg-white/60 p-4 rounded-2xl shadow-md">
           <h2 className="text-xl font-semibold mb-3 text-green-700">2. Select a Voice</h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             {VOICES.map(v => (
               <button key={v.id} onClick={() => handleVoiceSelection(v.id)} className={`p-3 text-center rounded-lg transition-colors ${voice === v.id ? 'bg-green-500 text-white shadow-lg' : 'bg-gray-200 hover:bg-green-200'}`}>{v.name}</button>
             ))}
