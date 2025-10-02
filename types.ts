@@ -21,11 +21,11 @@ export interface Personality {
 }
 
 // For Chat
-export interface ChatMessage {
-    id: string;
-    role: 'user' | 'model' | 'system';
-    parts: { text: string; component?: React.ReactNode }[];
-    timestamp: number;
+export interface Transcript {
+  id: string;
+  role: 'user' | 'model' | 'system';
+  parts: { text?: string; component?: React.ReactNode, imageUrl?: string }[];
+  timestamp: number;
 }
 
 

@@ -1,13 +1,11 @@
 import { GoogleGenAI, LiveSession, LiveServerMessage, Modality, FunctionDeclaration, Type, Blob } from '@google/genai';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AvatarConfig, Voice, Personality, ChatMessage } from '../types';
-import { MicrophoneIcon } from './icons/MicrophoneIcon';
+import type { AvatarConfig, Voice, Personality, Transcript, Board, WinnerInfo, Player } from '../types';
 import Avatar from './Avatar';
 import TicTacToeBoard from './TicTacToeBoard';
-import GuessTheNumberGame from './GuessTheNumberGame';
-import type { Board, WinnerInfo, Player } from '../types';
+import DrawingCanvas from './DrawingCanvas';
+import { PencilIcon } from './icons/PencilIcon';
 
-// FIX: Implement encode/decode functions manually as per Gemini API guidelines.
 // Encoding/Decoding functions as per guidelines
 function encode(bytes: Uint8Array): string {
   let binary = '';
@@ -34,6 +32,7 @@ async function decodeAudioData(
     sampleRate: number,
     numChannels: number,
 ): Promise<AudioBuffer> {
+    // FIX: Corrected typo from Int116Array to Int16Array.
     const dataInt16 = new Int16Array(data.buffer);
     const frameCount = dataInt16.length / numChannels;
     const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
@@ -47,18 +46,64 @@ async function decodeAudioData(
     return buffer;
 }
 
-
+// --- Function Declarations for AI Tools ---
 const playTicTacToeFunctionDeclaration: FunctionDeclaration = {
   name: 'playTicTacToe',
-  description: 'Starts a game of Tic Tac Toe with the user. The AI is player "O" and goes second.',
+  description: 'Starts or restarts a game of Tic Tac Toe. Call this to show the board.',
   parameters: { type: Type.OBJECT, properties: {} },
 };
 
-const playGuessTheNumberFunctionDeclaration: FunctionDeclaration = {
-    name: 'playGuessTheNumber',
-    description: 'Starts a game of Guess the Number. The AI thinks of a number and the user has to guess it.',
+const aiMakeMoveFunctionDeclaration: FunctionDeclaration = {
+    name: 'aiMakeMove',
+    description: "Makes the AI's move in Tic Tac Toe.",
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            row: { type: Type.NUMBER, description: 'The row index (0-2) of the move.' },
+            col: { type: Type.NUMBER, description: 'The column index (0-2) of the move.' },
+        },
+        required: ['row', 'col'],
+    },
+};
+
+const endGameFunctionDeclaration: FunctionDeclaration = {
+    name: 'endGame',
+    description: 'Hides the game board after a game is finished and the user wants to do something else.',
     parameters: { type: Type.OBJECT, properties: {} },
 };
+
+const startDrawingFunctionDeclaration: FunctionDeclaration = {
+  name: 'startDrawing',
+  description: 'Shows the drawing canvas to the user when you want to play a drawing game.',
+  parameters: { type: Type.OBJECT, properties: {} },
+};
+
+const endDrawingFunctionDeclaration: FunctionDeclaration = {
+  name: 'endDrawing',
+  description: 'Hides the drawing canvas. Call this if the user decides not to draw.',
+  parameters: { type: Type.OBJECT, properties: {} },
+};
+
+const generateAndShowImageFunctionDeclaration: FunctionDeclaration = {
+    name: 'generateAndShowImage',
+    description: 'Generates an image based on a descriptive prompt and shows it to the user in the chat.',
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            prompt: { type: Type.STRING, description: 'A detailed, family-friendly description of the image to generate.' },
+        },
+        required: ['prompt'],
+    },
+};
+
+const ALL_TOOLS = [{ functionDeclarations: [
+    playTicTacToeFunctionDeclaration,
+    aiMakeMoveFunctionDeclaration,
+    endGameFunctionDeclaration,
+    startDrawingFunctionDeclaration,
+    endDrawingFunctionDeclaration,
+    generateAndShowImageFunctionDeclaration,
+] }];
 
 
 interface ChatScreenProps {
@@ -71,15 +116,22 @@ interface ChatScreenProps {
 const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onEndChat }) => {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isConnecting, setIsConnecting] = useState(true);
+  const [transcript, setTranscript] = useState<Transcript[]>([]);
   const [error, setError] = useState<string | null>(null);
+  
+  // Game States
+  const [isGameActive, setIsGameActive] = useState(false);
+  const [board, setBoard] = useState<Board>([['', '', ''], ['', '', ''], ['', '', '']]);
+  const [currentPlayer, setCurrentPlayer] = useState<Player>('X');
+  const [winnerInfo, setWinnerInfo] = useState<WinnerInfo | 'draw' | null>(null);
+  const [isDrawingCanvasVisible, setIsDrawingCanvasVisible] = useState(false);
 
   const aiRef = useRef<GoogleGenAI | null>(null);
   const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
+  const gameStateRef = useRef({ board, currentPlayer, isGameActive });
   
-  const inputAudioContextRef = useRef<AudioContext | null>(null);
-  const outputAudioContextRef = useRef<AudioContext | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -89,303 +141,344 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
 
   const currentInputTranscriptionRef = useRef('');
   const currentOutputTranscriptionRef = useRef('');
+  const isAiSpeakingRef = useRef(false);
+  const isUserTurnRef = useRef(false);
+
+  // Update game state ref whenever state changes
+  useEffect(() => {
+    gameStateRef.current = { board, currentPlayer, isGameActive };
+  }, [board, currentPlayer, isGameActive]);
+
+  const addTranscript = useCallback((message: Omit<Transcript, 'id' | 'timestamp'>) => {
+    setTranscript(prev => [...prev, { ...message, id: crypto.randomUUID(), timestamp: Date.now() }]);
+  }, []);
+
+  const updateLastTranscript = useCallback((updateFn: (prev: Transcript) => Transcript) => {
+      setTranscript(prev => {
+          if (prev.length === 0) return prev;
+          const newTranscript = [...prev];
+          newTranscript[newTranscript.length - 1] = updateFn(newTranscript[newTranscript.length - 1]);
+          return newTranscript;
+      });
+  }, []);
+  
+  const checkWinner = useCallback((currentBoard: Board): WinnerInfo | 'draw' | null => {
+    const lines: [[number, number], [number, number], [number, number]][] = [
+        [[0, 0], [0, 1], [0, 2]], [[1, 0], [1, 1], [1, 2]], [[2, 0], [2, 1], [2, 2]],
+        [[0, 0], [1, 0], [2, 0]], [[0, 1], [1, 1], [2, 1]], [[0, 2], [1, 2], [2, 2]],
+        [[0, 0], [1, 1], [2, 2]], [[0, 2], [1, 1], [2, 0]],
+    ];
+    for (const line of lines) {
+        const [a, b, c] = line;
+        if (currentBoard[a[0]][a[1]] && currentBoard[a[0]][a[1]] === currentBoard[b[0]][b[1]] && currentBoard[a[0]][a[1]] === currentBoard[c[0]][c[1]]) {
+            return { winner: currentBoard[a[0]][a[1]] as Player, line };
+        }
+    }
+    if (currentBoard.flat().every(cell => cell !== '')) return 'draw';
+    return null;
+  }, []);
+  
+  const stopAudioProcessing = useCallback(() => {
+    streamRef.current?.getTracks().forEach(track => track.stop());
+    streamRef.current = null;
+    mediaStreamSourceRef.current?.disconnect();
+    scriptProcessorRef.current?.disconnect();
+    scriptProcessorRef.current = null;
+  }, []);
+  
+  const closeSession = useCallback(() => {
+    stopAudioProcessing();
+    sessionPromiseRef.current?.then(session => session.close()).catch(e => console.error("Error closing session:", e));
+    sessionPromiseRef.current = null;
+    setIsListening(false);
+    setIsConnecting(false);
+  }, [stopAudioProcessing]);
 
   useEffect(() => {
-    setMessages([{
-        id: crypto.randomUUID(),
-        role: 'model',
-        parts: [{ text: `Hello! I'm ${avatar.seed}, your AI friend. Press the microphone button and let's talk!` }],
-        timestamp: Date.now(),
-    }]);
-    
-    // Initialize AudioContexts. This might require a user gesture on some browsers.
-    if (!outputAudioContextRef.current) {
-        try {
-            outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-        } catch (e) {
-            console.error("Error creating output AudioContext:", e);
-            setError("Could not initialize audio playback. Please allow audio playback in your browser settings.");
-        }
+    if (!process.env.API_KEY) {
+      setError('API key is not set.');
+      setIsConnecting(false);
+      return;
     }
-  }, [avatar.seed]);
-
-  const addMessage = useCallback((message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
-    setMessages(prev => [...prev, { ...message, id: crypto.randomUUID(), timestamp: Date.now() }]);
-  }, []);
-
-  const updateLastMessage = useCallback((updateFn: (prev: ChatMessage) => ChatMessage) => {
-      setMessages(prev => {
-          if (prev.length === 0) return prev;
-          const newMessages = [...prev];
-          newMessages[newMessages.length - 1] = updateFn(newMessages[newMessages.length - 1]);
-          return newMessages;
-      });
-  }, []);
-
-  const handleGameEnd = useCallback((gameId: string, result: string, functionName: string) => {
-      console.log(`Game ended: ${result}`);
-      sessionPromiseRef.current?.then(session => {
-        session.sendToolResponse({
-          functionResponses: {
-            id: gameId,
-            name: functionName,
-            response: { result: `The game is over. The result is: ${result}` },
-          }
-        });
-      });
-  }, []);
-
-  const stopListening = useCallback(async () => {
-      setIsListening(false);
-      
-      // Stop microphone processing
-      if (mediaStreamSourceRef.current && scriptProcessorRef.current) {
-          mediaStreamSourceRef.current.disconnect();
-          scriptProcessorRef.current.disconnect();
-          scriptProcessorRef.current.onaudioprocess = null;
-      }
-      
-      // Stop microphone stream tracks
-      streamRef.current?.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-      
-      // Close input audio context
-      if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
-          await inputAudioContextRef.current.close();
-          inputAudioContextRef.current = null;
-      }
-      
-      // Close Gemini session
-      try {
-        const session = await sessionPromiseRef.current;
-        session?.close();
-      } catch (e) {
-        console.error("Error closing session:", e);
-      }
-      sessionPromiseRef.current = null;
-  }, []);
-
-
-  const startListening = useCallback(async () => {
-    setError(null);
-    setIsConnecting(true);
+    aiRef.current = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
-    // Resume output audio context if it was suspended
-    if (outputAudioContextRef.current?.state === 'suspended') {
-      await outputAudioContextRef.current.resume();
-    }
-    
-    // Initialize input audio context
-    if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
-        try {
-            inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-        } catch (e) {
-            console.error("Error creating input AudioContext:", e);
-            setError("Could not initialize microphone. Please allow microphone access.");
-            setIsConnecting(false);
-            return;
-        }
-    }
-    
-    if (!aiRef.current) {
-        aiRef.current = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-    }
-
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        streamRef.current = stream;
-
-        sessionPromiseRef.current = aiRef.current.live.connect({
-            model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-            config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                    voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }
-                },
-                systemInstruction: personality.systemInstruction,
-                outputAudioTranscription: {},
-                inputAudioTranscription: {},
-                tools: [{ functionDeclarations: [playTicTacToeFunctionDeclaration, playGuessTheNumberFunctionDeclaration] }],
-            },
-            callbacks: {
-                onopen: () => {
-                    setIsConnecting(false);
-                    setIsListening(true);
-                    
-                    const source = inputAudioContextRef.current!.createMediaStreamSource(stream);
-                    mediaStreamSourceRef.current = source;
-                    const scriptProcessor = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
-                    scriptProcessorRef.current = scriptProcessor;
-
-                    scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
-                        const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-                        const l = inputData.length;
-                        const int16 = new Int16Array(l);
-                        for (let i = 0; i < l; i++) {
-                            int16[i] = inputData[i] * 32768;
-                        }
-                        const pcmBlob: Blob = {
-                            data: encode(new Uint8Array(int16.buffer)),
-                            mimeType: 'audio/pcm;rate=16000',
-                        };
-                        
-                        sessionPromiseRef.current?.then((session) => {
-                            session.sendRealtimeInput({ media: pcmBlob });
-                        });
-                    };
-                    source.connect(scriptProcessor);
-                    scriptProcessor.connect(inputAudioContextRef.current!.destination);
-                },
-                onmessage: async (message: LiveServerMessage) => {
-                    if (message.serverContent) {
-                        // Handle transcription
-                        if (message.serverContent.inputTranscription) {
-                            const text = message.serverContent.inputTranscription.text;
-                            const fullText = currentInputTranscriptionRef.current + text;
-                            if (messages[messages.length - 1]?.role !== 'user') {
-                                addMessage({ role: 'user', parts: [{ text: fullText }] });
-                            } else {
-                                updateLastMessage(prev => ({ ...prev, parts: [{ text: fullText }] }));
-                            }
-                            currentInputTranscriptionRef.current = fullText;
-                        }
-                        if (message.serverContent.outputTranscription) {
-                            const text = message.serverContent.outputTranscription.text;
-                            const fullText = currentOutputTranscriptionRef.current + text;
-                            if (messages[messages.length - 1]?.role !== 'model') {
-                                addMessage({ role: 'model', parts: [{ text: fullText }] });
-                            } else {
-                                updateLastMessage(prev => ({ ...prev, parts: [{ text: fullText }] }));
-                            }
-                            currentOutputTranscriptionRef.current = fullText;
-                        }
-                        if (message.serverContent.turnComplete) {
-                            currentInputTranscriptionRef.current = '';
-                            currentOutputTranscriptionRef.current = '';
-                        }
-                        
-                        // Handle audio playback
-                        const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData.data;
-                        if (audioData) {
-                            setIsSpeaking(true);
-                            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputAudioContextRef.current!.currentTime);
-                            const audioBuffer = await decodeAudioData(decode(audioData), outputAudioContextRef.current!, 24000, 1);
-                            const source = outputAudioContextRef.current!.createBufferSource();
-                            source.buffer = audioBuffer;
-                            source.connect(outputAudioContextRef.current!.destination);
-                            
-                            source.addEventListener('ended', () => {
-                                outputSourcesRef.current.delete(source);
-                                if (outputSourcesRef.current.size === 0) {
-                                    setIsSpeaking(false);
-                                }
-                            });
-
-                            source.start(nextStartTimeRef.current);
-                            nextStartTimeRef.current += audioBuffer.duration;
-                            outputSourcesRef.current.add(source);
-                        }
-                        
-                        if (message.serverContent.interrupted) {
-                            for (const source of outputSourcesRef.current.values()) {
-                                source.stop();
-                            }
-                            outputSourcesRef.current.clear();
-                            nextStartTimeRef.current = 0;
-                            setIsSpeaking(false);
-                        }
-                    }
-
-                    if (message.toolCall) {
-                        for (const fc of message.toolCall.functionCalls) {
-                            if (fc.name === 'playTicTacToe') {
-                                addMessage({
-                                    role: 'system',
-                                    parts: [{
-                                        text: "Let's play Tic-Tac-Toe! You are X.",
-                                        component: (
-                                            <TicTacToeGameWrapper 
-                                                onGameEnd={(result) => handleGameEnd(fc.id, result, fc.name)}
-                                            />
-                                        )
-                                    }]
-                                });
-                            } else if (fc.name === 'playGuessTheNumber') {
-                                addMessage({
-                                    role: 'system',
-                                    parts: [{
-                                        text: "Let's play Guess the Number!",
-                                        component: (
-                                            <GuessTheNumberGame 
-                                                onGameEnd={(result) => handleGameEnd(fc.id, result, fc.name)}
-                                            />
-                                        )
-                                    }]
-                                });
-                            }
-                        }
-                    }
-                },
-                onerror: (e: ErrorEvent) => {
-                    console.error("Session error:", e);
-                    setError("A connection error occurred. Please try again.");
-                    stopListening();
-                },
-                onclose: (e: CloseEvent) => {
-                    console.log("Session closed");
-                    stopListening();
-                },
-            }
-        });
-    } catch (err) {
-        console.error("Failed to start microphone:", err);
-        setError("Failed to access microphone. Please check your browser permissions.");
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    } catch (e) {
+        console.error("Error creating AudioContext:", e);
+        setError("Could not initialize audio. Please check browser permissions.");
         setIsConnecting(false);
+        return;
     }
-  }, [voice, personality.systemInstruction, addMessage, updateLastMessage, messages, handleGameEnd, stopListening]);
 
+    sessionPromiseRef.current = aiRef.current.live.connect({
+        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+        config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice }}},
+            systemInstruction: personality.systemInstruction,
+            outputAudioTranscription: {},
+            inputAudioTranscription: {},
+            tools: ALL_TOOLS,
+        },
+        callbacks: {
+            onopen: () => {
+                setIsConnecting(false);
+                addTranscript({ role: 'system', parts: [{ text: `Connecting to ${avatar.seed}...` }]});
+                // Send an initial prompt to get a greeting
+                 sessionPromiseRef.current?.then(session => {
+                    session.sendText("Hi, introduce yourself with a friendly greeting based on your personality.");
+                });
+            },
+            onmessage: async (message: LiveServerMessage) => {
+                 if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
+                    isAiSpeakingRef.current = true;
+                    setIsSpeaking(true);
+                    if(isUserTurnRef.current) {
+                        isUserTurnRef.current = false;
+                        stopAudioProcessing();
+                    }
+                 }
 
-  const handleMicClick = () => {
-    if (isListening) {
-      stopListening();
+                if (message.serverContent) {
+                    // Handle transcription
+                    if (message.serverContent.inputTranscription) {
+                        const text = message.serverContent.inputTranscription.text;
+                        const fullText = currentInputTranscriptionRef.current + text;
+                        if (transcript[transcript.length - 1]?.role !== 'user') {
+                            addTranscript({ role: 'user', parts: [{ text: fullText }] });
+                        } else {
+                            updateLastTranscript(prev => ({ ...prev, parts: [{ text: fullText }] }));
+                        }
+                        currentInputTranscriptionRef.current = fullText;
+                    }
+                    if (message.serverContent.outputTranscription) {
+                        const text = message.serverContent.outputTranscription.text;
+                        const fullText = currentOutputTranscriptionRef.current + text;
+                        if (transcript[transcript.length - 1]?.role !== 'model') {
+                            addTranscript({ role: 'model', parts: [{ text: fullText }] });
+                        } else {
+                            updateLastTranscript(prev => ({ ...prev, parts: [{ text: fullText }] }));
+                        }
+                        currentOutputTranscriptionRef.current = fullText;
+                    }
+                    if (message.serverContent.turnComplete) {
+                        currentInputTranscriptionRef.current = '';
+                        currentOutputTranscriptionRef.current = '';
+                    }
+                    
+                    const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData.data;
+                    if (audioData) {
+                        const ctx = audioContextRef.current;
+                        if (!ctx) return;
+                        nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+                        const audioBuffer = await decodeAudioData(decode(audioData), ctx, 24000, 1);
+                        const source = ctx.createBufferSource();
+                        source.buffer = audioBuffer;
+                        source.connect(ctx.destination);
+                        
+                        source.addEventListener('ended', () => {
+                            outputSourcesRef.current.delete(source);
+                            if (outputSourcesRef.current.size === 0) {
+                                isAiSpeakingRef.current = false;
+                                setIsSpeaking(false);
+                            }
+                        });
+
+                        source.start(nextStartTimeRef.current);
+                        nextStartTimeRef.current += audioBuffer.duration;
+                        outputSourcesRef.current.add(source);
+                    }
+                }
+
+                if (message.toolCall) {
+                    for (const fc of message.toolCall.functionCalls) {
+                        if (fc.name === 'playTicTacToe') {
+                            setBoard([['', '', ''], ['', '', ''], ['', '', '']]);
+                            setCurrentPlayer('X');
+                            setWinnerInfo(null);
+                            setIsGameActive(true);
+                        } else if (fc.name === 'aiMakeMove') {
+                            const { row, col } = fc.args;
+                            if (gameStateRef.current.board[row][col] === '') {
+                                const newBoard = gameStateRef.current.board.map((r, rI) => r.map((c, cI) => (rI === row && cI === col ? 'O' : c))) as Board;
+                                setBoard(newBoard);
+                                const gameResult = checkWinner(newBoard);
+                                if(gameResult) {
+                                    setWinnerInfo(gameResult);
+                                    setIsGameActive(false);
+                                    sessionPromiseRef.current?.then(session => session.sendText(`The game is over. The result is ${gameResult === 'draw' ? 'a draw' : `the winner is ${gameResult.winner}`}.`));
+                                } else {
+                                    setCurrentPlayer('X');
+                                }
+                            }
+                        } else if (fc.name === 'endGame') {
+                            setIsGameActive(false);
+                        } else if (fc.name === 'startDrawing') {
+                            setIsDrawingCanvasVisible(true);
+                        } else if (fc.name === 'endDrawing') {
+                            setIsDrawingCanvasVisible(false);
+                        } else if (fc.name === 'generateAndShowImage') {
+                             const prompt = fc.args.prompt;
+                             addTranscript({role: 'model', parts: [{ text: `Generating an image of: ${prompt}`}]});
+                             try {
+                                const response = await aiRef.current!.models.generateImages({
+                                    model: 'imagen-4.0-generate-001',
+                                    prompt: prompt,
+                                    config: { numberOfImages: 1, outputMimeType: 'image/jpeg' },
+                                });
+                                const base64ImageBytes = response.generatedImages[0].image.imageBytes;
+                                const imageUrl = `data:image/jpeg;base64,${base64ImageBytes}`;
+                                addTranscript({ role: 'model', parts: [{ imageUrl }] });
+                             } catch (e) {
+                                console.error("Image generation failed:", e);
+                                addTranscript({role: 'model', parts: [{ text: "Sorry, I couldn't create that image."}]});
+                             }
+                        }
+                    }
+                }
+            },
+            onerror: (e: ErrorEvent) => {
+                console.error("Session error:", e);
+                const reason = (e as any).reason || 'Please check your API key and network connection.';
+                setError(`Connection failed. ${reason}`);
+                setIsConnecting(false);
+            },
+            onclose: (e: CloseEvent) => {
+                if (e.code > 1000) { // Abnormal closure
+                    setError(`Connection closed: ${e.reason || 'Please check your API key.'} (Code: ${e.code})`);
+                }
+                setIsListening(false);
+                setIsConnecting(false);
+            },
+        }
+    }).catch(e => {
+        console.error("Connection promise rejected:", e);
+        setError("Failed to connect. Please check your API key and permissions.");
+        setIsConnecting(false);
+    });
+
+    return () => closeSession();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleMicClick = async () => {
+    if (isAiSpeakingRef.current || isConnecting) return;
+
+    // Resume audio context on first user interaction
+    if (audioContextRef.current?.state === 'suspended') {
+      await audioContextRef.current.resume();
+    }
+
+    if (isUserTurnRef.current) {
+        isUserTurnRef.current = false;
+        stopAudioProcessing();
+        setIsListening(false);
     } else {
-      startListening();
+        isUserTurnRef.current = true;
+        setIsListening(true);
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            streamRef.current = stream;
+            const source = audioContextRef.current!.createMediaStreamSource(stream);
+            mediaStreamSourceRef.current = source;
+            const scriptProcessor = audioContextRef.current!.createScriptProcessor(4096, 1, 1);
+            scriptProcessorRef.current = scriptProcessor;
+
+            scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
+                const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
+                const l = inputData.length;
+                const int16 = new Int16Array(l);
+                for (let i = 0; i < l; i++) {
+                    int16[i] = inputData[i] * 32768;
+                }
+                const pcmBlob: Blob = { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
+                sessionPromiseRef.current?.then((session) => session.sendRealtimeInput({ media: pcmBlob }));
+            };
+            source.connect(scriptProcessor);
+            scriptProcessor.connect(audioContextRef.current!.destination);
+        } catch (err) {
+            console.error("Mic access failed:", err);
+            setError("Microphone access denied.");
+            setIsListening(false);
+            isUserTurnRef.current = false;
+        }
     }
   };
   
+  const handleCellClick = useCallback((row: number, col: number) => {
+      if (board[row][col] || winnerInfo || currentPlayer !== 'X' || !isGameActive) return;
+
+      const newBoard = board.map((r, rI) => r.map((c, cI) => (rI === row && cI === col ? 'X' : c))) as Board;
+      setBoard(newBoard);
+
+      const gameResult = checkWinner(newBoard);
+      if (gameResult) {
+          setWinnerInfo(gameResult);
+          setIsGameActive(false);
+          sessionPromiseRef.current?.then(session => session.sendText(`I made my move. The game is over. The result is ${gameResult === 'draw' ? 'a draw' : `the winner is ${gameResult.winner}`}.`));
+      } else {
+          setCurrentPlayer('O');
+          sessionPromiseRef.current?.then(session => session.sendText(`I made my move to row ${row}, column ${col}. Now it is your turn to make a move.`));
+      }
+  }, [board, winnerInfo, currentPlayer, isGameActive, checkWinner]);
+  
+  const handleDrawingSubmit = useCallback(async (imageDataUrl: string) => {
+    setIsDrawingCanvasVisible(false);
+    const base64Data = imageDataUrl.split(',')[1];
+    addTranscript({ role: 'user', parts: [{ text: 'I drew something!', imageUrl: imageDataUrl }] });
+    
+    const imagePart = { inlineData: { mimeType: 'image/jpeg', data: base64Data } };
+    const textPart = { text: "Here is the drawing I made. What do you think?" };
+    
+    sessionPromiseRef.current?.then(session => {
+        session.sendInput({ contents: { parts: [imagePart, textPart] } });
+    });
+  }, [addTranscript]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [transcript]);
   
   return (
     <div className="flex flex-col h-full">
+      {isDrawingCanvasVisible && <DrawingCanvas onClose={() => setIsDrawingCanvasVisible(false)} onSubmit={handleDrawingSubmit} />}
       <header className="flex items-center justify-between p-4 bg-white/80 border-b">
         <div className="flex items-center gap-4">
-          <Avatar config={avatar} className="w-14 h-14" isSpeaking={isSpeaking} isListening={isListening} />
+          <Avatar config={avatar} className="w-14 h-14" />
           <div>
             <h1 className="text-xl font-bold text-gray-800">{avatar.seed}</h1>
             <p className="text-gray-500">{personality.name}</p>
           </div>
         </div>
-        <button onClick={onEndChat} className="px-4 py-2 text-sm bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-semibold">End Chat</button>
+        <div className="flex items-center gap-2">
+            <button onClick={() => setIsDrawingCanvasVisible(true)} className="p-2 bg-yellow-400 text-gray-800 rounded-lg hover:bg-yellow-500 font-semibold"><PencilIcon className="w-6 h-6" /></button>
+            <button onClick={onEndChat} className="px-4 py-2 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 font-semibold">End Chat</button>
+        </div>
       </header>
 
       <div className="flex-grow p-4 overflow-y-auto bg-indigo-50/50">
         <div className="space-y-4">
-            {messages.map((msg) => (
+            {transcript.map((msg) => (
                 <div key={msg.id} className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    {msg.role !== 'user' && <div className="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0"><Avatar config={avatar} className="w-8 h-8" /></div>}
-                    <div className={`max-w-md p-3 rounded-2xl ${msg.role === 'user' ? 'bg-blue-500 text-white rounded-br-none' : msg.role === 'system' ? 'bg-transparent w-full max-w-full' : 'bg-white text-gray-800 rounded-bl-none shadow-sm'}`}>
+                    {msg.role === 'model' && <Avatar config={avatar} className="w-8 h-8 flex-shrink-0" />}
+                    <div className={`max-w-md p-3 rounded-2xl ${msg.role === 'user' ? 'bg-blue-500 text-white rounded-br-none' : msg.role === 'system' ? 'bg-transparent w-full max-w-full text-center text-gray-500 text-sm' : 'bg-white text-gray-800 rounded-bl-none shadow-sm'}`}>
                         {msg.parts.map((part, index) => (
                             <div key={index}>
-                                <p>{part.text}</p>
+                                {part.text && <p>{part.text}</p>}
+                                {part.imageUrl && <img src={part.imageUrl} alt="User drawing or AI generated content" className="mt-2 rounded-lg" />}
                                 {part.component}
                             </div>
                         ))}
                     </div>
                 </div>
             ))}
+             {isGameActive && (
+                <div className="flex justify-center">
+                    <TicTacToeBoard board={board} onCellClick={handleCellClick} currentPlayer={currentPlayer} winnerInfo={winnerInfo} />
+                </div>
+            )}
         </div>
         <div ref={messagesEndRef} />
       </div>
@@ -393,79 +486,16 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ avatar, voice, personality, onE
       <footer className="p-4 bg-white/80 border-t">
         {error && <p className="text-center text-red-500 mb-2">{error}</p>}
         <div className="flex flex-col items-center justify-center">
-            <button onClick={handleMicClick} disabled={isConnecting} className={`w-20 h-20 rounded-full flex items-center justify-center transition-colors text-white ${isConnecting ? 'bg-gray-400' : isListening ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-500 hover:bg-blue-600'}`}>
-                <MicrophoneIcon className="w-10 h-10" />
+            <button onClick={handleMicClick} disabled={isConnecting || isSpeaking} className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 transform text-white disabled:bg-gray-400 ${isListening ? 'bg-red-500 scale-110' : 'bg-blue-500 hover:bg-blue-600'}`}>
+                <Avatar config={avatar} className="w-20 h-20" isListening={isListening} isSpeaking={isSpeaking}/>
             </button>
             <p className="text-sm text-gray-500 mt-2 h-5">
-                {isConnecting ? 'Connecting...' : isListening ? 'Listening... Press to stop' : 'Press to talk'}
+                {isConnecting ? 'Connecting...' : isSpeaking ? `${avatar.seed} is speaking...` : isListening ? 'Listening... Tap to stop' : 'Tap the avatar to speak'}
             </p>
         </div>
       </footer>
     </div>
   );
 };
-
-// Wrapper for TicTacToe to manage its state and interact with ChatScreen
-const TicTacToeGameWrapper: React.FC<{onGameEnd: (result: string) => void}> = ({ onGameEnd }) => {
-    const [board, setBoard] = useState<Board>([['', '', ''], ['', '', ''], ['', '', '']]);
-    const [currentPlayer, setCurrentPlayer] = useState<Player>('X');
-    const [winnerInfo, setWinnerInfo] = useState<WinnerInfo | 'draw' | null>(null);
-    const aiPlayer = 'O';
-
-    const checkWinner = useCallback((currentBoard: Board): WinnerInfo | 'draw' | null => {
-        const lines: [[number, number], [number, number], [number, number]][] = [
-            [[0, 0], [0, 1], [0, 2]], [[1, 0], [1, 1], [1, 2]], [[2, 0], [2, 1], [2, 2]],
-            [[0, 0], [1, 0], [2, 0]], [[0, 1], [1, 1], [2, 1]], [[0, 2], [1, 2], [2, 2]],
-            [[0, 0], [1, 1], [2, 2]], [[0, 2], [1, 1], [2, 0]],
-        ];
-        for (const line of lines) {
-            const [a, b, c] = line;
-            if (currentBoard[a[0]][a[1]] && currentBoard[a[0]][a[1]] === currentBoard[b[0]][b[1]] && currentBoard[a[0]][a[1]] === currentBoard[c[0]][c[1]]) {
-                return { winner: currentBoard[a[0]][a[1]] as Player, line };
-            }
-        }
-        if (currentBoard.flat().every(cell => cell !== '')) return 'draw';
-        return null;
-    }, []);
-
-    const handleAITurn = useCallback((newBoard: Board) => {
-        const availableCells: [number, number][] = [];
-        newBoard.forEach((row, rIdx) => row.forEach((cell, cIdx) => {
-            if (cell === '') availableCells.push([rIdx, cIdx]);
-        }));
-
-        if (availableCells.length > 0) {
-            const move = availableCells[Math.floor(Math.random() * availableCells.length)];
-            const updatedBoard = newBoard.map((r, rI) => r.map((c, cI) => (rI === move[0] && cI === move[1] ? aiPlayer : c))) as Board;
-            setBoard(updatedBoard);
-            const gameResult = checkWinner(updatedBoard);
-            if (gameResult) {
-                setWinnerInfo(gameResult);
-                onGameEnd(gameResult === 'draw' ? 'Draw' : `Winner is ${gameResult.winner}`);
-            } else {
-                setCurrentPlayer('X');
-            }
-        }
-    }, [aiPlayer, checkWinner, onGameEnd]);
-
-    const handleCellClick = useCallback((row: number, col: number) => {
-        if (board[row][col] || winnerInfo || currentPlayer !== 'X') return;
-
-        const newBoard = board.map((r, rI) => r.map((c, cI) => (rI === row && cI === col ? 'X' : c))) as Board;
-        setBoard(newBoard);
-
-        const gameResult = checkWinner(newBoard);
-        if (gameResult) {
-            setWinnerInfo(gameResult);
-            onGameEnd(gameResult === 'draw' ? 'Draw' : `Winner is ${gameResult.winner}`);
-        } else {
-            setCurrentPlayer('O');
-            setTimeout(() => handleAITurn(newBoard), 500);
-        }
-    }, [board, winnerInfo, currentPlayer, checkWinner, onGameEnd, handleAITurn]);
-    
-    return <TicTacToeBoard board={board} onCellClick={handleCellClick} currentPlayer={currentPlayer} winnerInfo={winnerInfo} />;
-};
-
 
 export default ChatScreen;
