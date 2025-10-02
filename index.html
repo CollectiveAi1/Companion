@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -16,6 +15,23 @@
   }
 }
 </script>
+<style>
+  @keyframes breathing {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.03); }
+  }
+  @keyframes talking {
+    0%, 100% { transform: translateY(0) scale(1.02); }
+    25% { transform: translateY(-4px) scale(1.04); }
+    75% { transform: translateY(2px) scale(1); }
+  }
+  .animate-breathing {
+    animation: breathing 4s ease-in-out infinite;
+  }
+  .animate-talking {
+    animation: talking 0.8s ease-in-out infinite;
+  }
+</style>
 </head>
   <body>
     <div id="root"></div>

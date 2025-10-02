@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AvatarConfig, Voice, Personality, Transcript, Board, Player, CellValue } from '../types';
+import type { AvatarConfig, Voice, Personality, Transcript, Board, Player, WinnerInfo } from '../types';
 import type { LiveSession, LiveServerMessage } from '@google/genai';
 import { GoogleGenAI, Modality, FunctionDeclaration, Type } from '@google/genai';
 import Avatar from './Avatar';
 import TicTacToeBoard from './TicTacToeBoard';
+import DrawingCanvas from './DrawingCanvas';
 
 // --- Audio Utility Functions ---
 function encode(bytes: Uint8Array): string {
@@ -62,21 +63,30 @@ const tools: FunctionDeclaration[] = [
         parameters: { type: Type.OBJECT, properties: {} },
     },
     {
-        name: 'makeMove',
-        description: "Places a player's mark on the Tic-Tac-Toe board.",
+        name: 'aiMakeMove',
+        description: "Places the AI's 'O' mark on the Tic-Tac-Toe board.",
         parameters: {
             type: Type.OBJECT,
             properties: {
                 row: { type: Type.INTEGER, description: 'The row index (0, 1, or 2) of the move.' },
                 col: { type: Type.INTEGER, description: 'The column index (0, 1, or 2) of the move.' },
-                player: { type: Type.STRING, description: "The player making the move, either 'X' (user) or 'O' (AI)." }
             },
-            required: ['row', 'col', 'player'],
+            required: ['row', 'col'],
         },
     },
     {
         name: 'resetGame',
         description: 'Resets the Tic-Tac-Toe board for a new game.',
+        parameters: { type: Type.OBJECT, properties: {} },
+    },
+    {
+        name: 'startDrawingGame',
+        description: 'Starts a new drawing game. This will display a drawing canvas for the user.',
+        parameters: { type: Type.OBJECT, properties: {} },
+    },
+    {
+        name: 'endDrawingGame',
+        description: 'Ends the drawing game and hides the drawing canvas.',
         parameters: { type: Type.OBJECT, properties: {} },
     }
 ];
@@ -92,7 +102,18 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   const [currentInput, setCurrentInput] = useState('');
   const [currentOutput, setCurrentOutput] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [drawingCanvasVisible, setDrawingCanvasVisible] = useState(false);
+
+  // Tic-Tac-Toe State
   const [gameBoard, setGameBoard] = useState<Board | null>(null);
+  const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
+  const [winnerInfo, setWinnerInfo] = useState<WinnerInfo | 'draw' | null>(null);
+
+  const gameStateRef = useRef({ board: gameBoard, player: currentPlayer });
+  useEffect(() => {
+    gameStateRef.current = { board: gameBoard, player: currentPlayer };
+  }, [gameBoard, currentPlayer]);
+
 
   const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -113,7 +134,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcripts, currentInput, currentOutput]);
 
-  const checkWinner = useCallback((board: Board): { winner: Player; line: number[][] } | 'draw' | null => {
+  const checkWinner = useCallback((board: Board): WinnerInfo | 'draw' | null => {
     const lines = [
       // Rows
       [[0, 0], [0, 1], [0, 2]],
@@ -141,6 +162,61 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
 
     return null;
   }, []);
+
+  const handleCellClick = useCallback(async (row: number, col: number) => {
+    if (!gameBoard || currentPlayer !== 'X' || winnerInfo || gameBoard[row][col] !== '') {
+        return;
+    }
+
+    // User's move
+    const newBoard = gameBoard.map(r => [...r]);
+    newBoard[row][col] = 'X';
+    setGameBoard(newBoard);
+
+    const result = checkWinner(newBoard);
+    if (result) {
+        setWinnerInfo(result);
+        setCurrentPlayer(null);
+        return;
+    }
+
+    // AI's turn
+    setCurrentPlayer('O');
+
+    // Notify AI
+    const boardString = JSON.stringify(newBoard);
+    const prompt = `The user placed their 'X' at row ${row}, column ${col}. The current board is ${boardString}. It is now your turn to place 'O'. Call the aiMakeMove function with your chosen coordinates.`;
+
+    const session = await sessionPromiseRef.current;
+    if (session) {
+        session.sendRealtimeInput({ text: prompt });
+    }
+  }, [gameBoard, currentPlayer, winnerInfo, checkWinner]);
+
+   const handleSubmitDrawing = useCallback((imageDataUrl: string) => {
+    const base64Data = imageDataUrl.split(',')[1];
+    if (!base64Data) return;
+
+    const imageBlob = {
+        data: base64Data,
+        mimeType: 'image/jpeg',
+    };
+    
+    sessionPromiseRef.current?.then((session) => {
+        session.sendRealtimeInput({ media: imageBlob });
+    });
+    
+    setTranscripts(prev => [
+        ...prev,
+        { 
+            id: Date.now(), 
+            speaker: 'user', 
+            text: `(Sent a drawing to ${avatar.seed})` 
+        },
+    ]);
+
+    setDrawingCanvasVisible(false);
+  }, [avatar.seed]);
 
   const connectToGemini = useCallback(async () => {
     setStatus('Getting ready...');
@@ -192,41 +268,51 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
              if (message.toolCall) {
                 const results = [];
                 for (const call of message.toolCall.functionCalls) {
-                    let result;
-                    if (call.name === 'startGame') {
-                        setGameBoard(Array(3).fill(null).map(() => Array(3).fill('')));
-                        result = { success: true };
-                    } else if (call.name === 'resetGame') {
-                        setGameBoard(null);
-                        result = { success: true };
-                    } else if (call.name === 'makeMove') {
-                        const { row, col, player } = call.args as { row: number; col: number; player: Player; };
-                        if (row < 0 || row > 2 || col < 0 || col > 2) {
-                            result = { success: false, error: 'Invalid coordinates.' };
-                        } else {
-                            setGameBoard(prevBoard => {
-                                if (!prevBoard || prevBoard[row][col] !== '') {
-                                    result = { success: false, error: 'This cell is already taken.' };
-                                    return prevBoard;
-                                }
-                                const newBoard = prevBoard.map(r => [...r]);
-                                newBoard[row][col] = player;
+                    let functionResult: any = { success: true };
 
-                                const winnerInfo = checkWinner(newBoard);
-                                if (winnerInfo) {
-                                    if (winnerInfo === 'draw') {
-                                        result = { success: true, gameState: 'draw' };
-                                    } else {
-                                        result = { success: true, gameState: winnerInfo.winner === 'X' ? 'user_wins' : 'ai_wins' };
-                                    }
+                    switch (call.name) {
+                        // Drawing Game
+                        case 'startDrawingGame':
+                            setDrawingCanvasVisible(true);
+                            break;
+                        case 'endDrawingGame':
+                            setDrawingCanvasVisible(false);
+                            break;
+
+                        // Tic Tac Toe
+                        case 'startGame':
+                            setGameBoard(Array(3).fill(null).map(() => Array(3).fill('')));
+                            setCurrentPlayer('X');
+                            setWinnerInfo(null);
+                            break;
+                        case 'resetGame':
+                             setGameBoard(Array(3).fill(null).map(() => Array(3).fill('')));
+                            setCurrentPlayer('X');
+                            setWinnerInfo(null);
+                            break;
+                        case 'aiMakeMove': {
+                            const { row, col } = call.args as { row: number; col: number };
+                            const { board, player } = gameStateRef.current;
+
+                            if (!board || player !== 'O' || row < 0 || row > 2 || col < 0 || col > 2 || board[row][col] !== '') {
+                                functionResult = { success: false, error: 'Invalid move.' };
+                            } else {
+                                const newBoard = board.map(r => [...r]);
+                                newBoard[row][col] = 'O';
+                                setGameBoard(newBoard);
+
+                                const result = checkWinner(newBoard);
+                                if (result) {
+                                    setWinnerInfo(result);
+                                    setCurrentPlayer(null); // Game over
                                 } else {
-                                    result = { success: true, gameState: 'continue' };
+                                    setCurrentPlayer('X'); // User's turn
                                 }
-                                return newBoard;
-                            });
+                            }
+                            break;
                         }
                     }
-                    results.push({ id: call.id, name: call.name, response: { result } });
+                    results.push({ id: call.id, name: call.name, response: { result: functionResult } });
                 }
 
                 if (results.length > 0) {
@@ -316,7 +402,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       console.error('Failed to initialize Gemini AI:', error);
       setStatus('Failed to initialize. Check console for details.');
     }
-  }, [voice, personality.systemInstruction, checkWinner]);
+  }, [voice, personality.systemInstruction, checkWinner, handleSubmitDrawing]);
 
   useEffect(() => {
     connectToGemini();
@@ -333,7 +419,14 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   }, []);
 
   return (
-    <div className="flex flex-col h-full bg-blue-50/50">
+    <div className="flex flex-col h-full bg-blue-50/50 relative">
+      {drawingCanvasVisible && (
+        <DrawingCanvas 
+            onClose={() => setDrawingCanvasVisible(false)} 
+            onSubmit={handleSubmitDrawing}
+        />
+      )}
+      
       <header className="flex items-center justify-between p-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
           <Avatar config={avatar} className="w-12 h-12" />
@@ -372,7 +465,12 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
 
        {gameBoard && (
         <div className="p-4 border-t border-gray-200 flex justify-center items-center bg-indigo-100/50">
-          <TicTacToeBoard board={gameBoard} />
+          <TicTacToeBoard 
+            board={gameBoard} 
+            onCellClick={handleCellClick}
+            currentPlayer={currentPlayer}
+            winnerInfo={winnerInfo}
+          />
         </div>
       )}
 
