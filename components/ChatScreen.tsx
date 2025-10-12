@@ -240,12 +240,13 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ outputAudioContext, avatar, voi
   }, [stopAudioProcessing]);
 
   useEffect(() => {
-    if (!process.env.API_KEY) {
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey) {
       setError('API key is not set.');
       setIsConnecting(false);
       return;
     }
-    aiRef.current = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    aiRef.current = new GoogleGenAI({ apiKey });
     
     sessionPromiseRef.current = aiRef.current.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',

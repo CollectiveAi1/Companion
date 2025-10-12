@@ -11,14 +11,7 @@ const App: React.FC = () => {
   const outputAudioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
-    // In a browser environment, `process` might not be defined.
-    // This check prevents the app from crashing and provides a clear error message.
-    try {
-      if (!process.env.API_KEY) {
-        setApiKeyExists(false);
-      }
-    } catch (e) {
-       // If process is not defined, it will throw an error.
+    if (!import.meta.env.VITE_GEMINI_API_KEY) {
       setApiKeyExists(false);
     }
   }, []);
@@ -102,8 +95,10 @@ const App: React.FC = () => {
       return (
         <div className="flex flex-col items-center justify-center h-full text-center p-8 text-gray-800">
             <h1 className="text-3xl font-bold text-red-600 mb-4">Configuration Error</h1>
-            <p className="text-lg">The Gemini API key is missing from the environment.</p>
-            <p className="text-gray-600 mt-2">Please ensure the <code>API_KEY</code> environment variable is set correctly in your development environment to use this application.</p>
+            <p className="text-lg">The Gemini API key is missing.</p>
+            <p className="text-gray-600 mt-2">To fix this, create a <code>.env</code> file in the project root and add the following line:</p>
+            <code className="mt-4 p-2 bg-gray-100 rounded">VITE_GEMINI_API_KEY=YOUR_API_KEY_HERE</code>
+            <p className="text-gray-600 mt-2">You can get an API key from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Google AI Studio</a>.</p>
         </div>
       );
     }
